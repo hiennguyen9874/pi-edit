@@ -9,6 +9,7 @@ import {
 	applyEditToNormalizedContent,
 	computeEditDiff,
 	detectLineEnding,
+	type EditMatchOptions,
 	type EditDiffError,
 	type EditDiffResult,
 	generateDiffString,
@@ -19,6 +20,7 @@ import {
 } from "./edit-diff.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
+import { loadEditToolSettings } from "./settings.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 type EditPreview = EditDiffResult | EditDiffError;
@@ -82,6 +84,8 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
 	/** Custom operations for file editing. Default: local filesystem */
 	operations?: EditOperations;
+	/** Matching behavior for exact/fuzzy replacement. Default: fuzzy enabled at 0.95 threshold. */
+	matching?: EditMatchOptions;
 }
 
 function prepareEditArguments(input: unknown): EditToolInput {
@@ -320,6 +324,7 @@ export function createEditToolDefinition(
 	options?: EditToolOptions,
 ): ToolDefinition<typeof editSchema, EditToolDetails | undefined, EditRenderState> {
 	const ops = options?.operations ?? defaultEditOperations;
+	const matching = options?.matching ?? {};
 	return {
 		name: "edit",
 		label: "edit",
@@ -366,7 +371,7 @@ export function createEditToolDefinition(
 					normalizedContent,
 					{ oldText: old_string, newText: new_string },
 					file_path,
-					{ replaceAll: replace_all },
+					{ ...matching, replaceAll: replace_all },
 				);
 				throwIfAborted();
 
@@ -414,7 +419,7 @@ export function createEditToolDefinition(
 					previewInput.oldString,
 					previewInput.newString,
 					context.cwd,
-					{ replaceAll: previewInput.replaceAll },
+					{ ...matching, replaceAll: previewInput.replaceAll },
 				).then((preview) => {
 					if (component.previewArgsKey === requestKey) {
 						setEditPreview(component, preview, requestKey);
@@ -481,6 +486,7 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
 
 export default function editExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
-		pi.registerTool(createEditToolDefinition(ctx.cwd));
+		const settings = loadEditToolSettings(ctx.cwd);
+		pi.registerTool(createEditToolDefinition(ctx.cwd, { matching: settings }));
 	});
 }

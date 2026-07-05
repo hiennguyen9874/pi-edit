@@ -171,6 +171,16 @@ export function applyReplacementsPreservingUnchangedLines(
 	return result;
 }
 
+export const DEFAULT_FUZZY_THRESHOLD = 0.95;
+const DOMINANT_FUZZY_MIN_CONFIDENCE = 0.97;
+const DOMINANT_FUZZY_DELTA = 0.08;
+const FALLBACK_THRESHOLD = 0.8;
+
+export interface EditMatchOptions {
+	allowFuzzy?: boolean;
+	fuzzyThreshold?: number;
+}
+
 export interface FuzzyMatchResult {
 	/** Whether a match was found */
 	found: boolean;
@@ -182,9 +192,12 @@ export interface FuzzyMatchResult {
 	usedFuzzyMatch: boolean;
 	/**
 	 * The content to use for replacement operations.
-	 * When exact match: original content. When fuzzy match: normalized content.
+	 * Exact and true fuzzy matches use original content. Normalized substring
+	 * matches use normalized content to preserve existing compatibility behavior.
 	 */
 	contentForReplacement: string;
+	/** User-facing reason why a fuzzy candidate was rejected. */
+	error?: Error;
 }
 
 export interface Edit {
@@ -197,18 +210,200 @@ export interface AppliedEditsResult {
 	newContent: string;
 }
 
-export interface ApplyEditOptions {
+export interface ApplyEditOptions extends EditMatchOptions {
 	replaceAll?: boolean;
 }
 
+function resolveMatchOptions(options: EditMatchOptions): Required<EditMatchOptions> {
+	return {
+		allowFuzzy: options.allowFuzzy ?? true,
+		fuzzyThreshold: options.fuzzyThreshold ?? DEFAULT_FUZZY_THRESHOLD,
+	};
+}
+
+export function levenshteinDistance(a: string, b: string): number {
+	if (a === b) return 0;
+	const aLen = a.length;
+	const bLen = b.length;
+	if (aLen === 0) return bLen;
+	if (bLen === 0) return aLen;
+
+	let previous = new Array<number>(bLen + 1);
+	let current = new Array<number>(bLen + 1);
+	for (let j = 0; j <= bLen; j++) {
+		previous[j] = j;
+	}
+
+	for (let i = 1; i <= aLen; i++) {
+		current[0] = i;
+		const aCode = a.charCodeAt(i - 1);
+		for (let j = 1; j <= bLen; j++) {
+			const cost = aCode === b.charCodeAt(j - 1) ? 0 : 1;
+			current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+		}
+		const nextPrevious = current;
+		current = previous;
+		previous = nextPrevious;
+	}
+
+	return previous[bLen];
+}
+
+export function similarity(a: string, b: string): number {
+	if (a.length === 0 && b.length === 0) return 1;
+	const maxLen = Math.max(a.length, b.length);
+	if (maxLen === 0) return 1;
+	return 1 - levenshteinDistance(a, b) / maxLen;
+}
+
+export function computeLineOffsets(lines: string[]): number[] {
+	const offsets: number[] = [];
+	let offset = 0;
+	for (let i = 0; i < lines.length; i++) {
+		offsets.push(offset);
+		offset += lines[i].length;
+		if (i < lines.length - 1) offset += 1;
+	}
+	return offsets;
+}
+
+function countLeadingWhitespace(line: string): number {
+	let count = 0;
+	for (const char of line) {
+		if (char !== " " && char !== "\t") break;
+		count += char === "\t" ? 4 : 1;
+	}
+	return count;
+}
+
+function computeRelativeIndentDepths(lines: string[]): number[] {
+	const indents = lines.map(countLeadingWhitespace);
+	const nonEmptyIndents = lines
+		.map((line, index) => (line.trim().length > 0 ? indents[index] : undefined))
+		.filter((indent): indent is number => indent !== undefined);
+	const minIndent = nonEmptyIndents.length > 0 ? Math.min(...nonEmptyIndents) : 0;
+	const indentSteps = nonEmptyIndents.map((indent) => indent - minIndent).filter((step) => step > 0);
+	const indentUnit = indentSteps.length > 0 ? Math.min(...indentSteps) : 1;
+
+	return lines.map((line, index) => {
+		if (line.trim().length === 0 || indentUnit <= 0) return 0;
+		return Math.round((indents[index] - minIndent) / indentUnit);
+	});
+}
+
+export function normalizeLines(lines: string[], includeDepth = true): string[] {
+	const indentDepths = includeDepth ? computeRelativeIndentDepths(lines) : undefined;
+	return lines.map((line, index) => {
+		const prefix = indentDepths ? `${indentDepths[index]}|` : "|";
+		const trimmed = line.trim();
+		return trimmed.length === 0 ? prefix : `${prefix}${normalizeForFuzzyMatch(trimmed)}`;
+	});
+}
+
+interface BestFuzzyMatch {
+	actualText: string;
+	startIndex: number;
+	startLine: number;
+	confidence: number;
+}
+
+interface BestFuzzyMatchResult {
+	best?: BestFuzzyMatch;
+	aboveThresholdCount: number;
+	secondBestScore: number;
+}
+
+function findBestFuzzyMatchCore(
+	contentLines: string[],
+	targetLines: string[],
+	offsets: number[],
+	threshold: number,
+	includeDepth: boolean,
+): BestFuzzyMatchResult {
+	const targetNormalized = normalizeLines(targetLines, includeDepth);
+	let best: BestFuzzyMatch | undefined;
+	let bestScore = -1;
+	let secondBestScore = -1;
+	let aboveThresholdCount = 0;
+
+	for (let start = 0; start <= contentLines.length - targetLines.length; start++) {
+		const windowLines = contentLines.slice(start, start + targetLines.length);
+		const windowNormalized = normalizeLines(windowLines, includeDepth);
+		let score = 0;
+		for (let i = 0; i < targetLines.length; i++) {
+			score += similarity(targetNormalized[i], windowNormalized[i]);
+		}
+		score /= targetLines.length;
+
+		if (score >= threshold) {
+			aboveThresholdCount++;
+		}
+		if (score > bestScore) {
+			secondBestScore = bestScore;
+			bestScore = score;
+			best = {
+				actualText: windowLines.join("\n"),
+				startIndex: offsets[start],
+				startLine: start + 1,
+				confidence: score,
+			};
+		} else if (score > secondBestScore) {
+			secondBestScore = score;
+		}
+	}
+
+	return { best, aboveThresholdCount, secondBestScore };
+}
+
+export function findBestFuzzyMatch(content: string, target: string, threshold: number): BestFuzzyMatchResult {
+	const contentLines = content.split("\n");
+	const targetLines = target.split("\n");
+	if (target.length === 0 || targetLines.length > contentLines.length) {
+		return { aboveThresholdCount: 0, secondBestScore: 0 };
+	}
+
+	const offsets = computeLineOffsets(contentLines);
+	let result = findBestFuzzyMatchCore(contentLines, targetLines, offsets, threshold, true);
+	if (result.best && result.best.confidence < threshold && result.best.confidence >= FALLBACK_THRESHOLD) {
+		const noDepthResult = findBestFuzzyMatchCore(contentLines, targetLines, offsets, threshold, false);
+		if (noDepthResult.best && noDepthResult.best.confidence > result.best.confidence) {
+			result = noDepthResult;
+		}
+	}
+
+	return result;
+}
+
+function emptyMatch(content: string, error?: Error): FuzzyMatchResult {
+	return {
+		found: false,
+		index: -1,
+		matchLength: 0,
+		usedFuzzyMatch: false,
+		contentForReplacement: content,
+		error,
+	};
+}
+
+function getFuzzyMatchError(path: string, oldText: string, best: BestFuzzyMatch, threshold: number, count: number): Error {
+	const thresholdPercent = Math.round(threshold * 100);
+	const similarityPercent = Math.round(best.confidence * 100);
+	if (count > 1) {
+		return new Error(
+			`Could not find a unique fuzzy match in ${path}.\nFound ${count} high-confidence matches above ${thresholdPercent}%.\nClosest match was ${similarityPercent}% similar at line ${best.startLine}.\nPlease provide more surrounding context.`,
+		);
+	}
+	return new Error(
+		`Could not find a close enough match in ${path}.\nClosest match was ${similarityPercent}% similar at line ${best.startLine}.\nClosest match was below the ${thresholdPercent}% similarity threshold.`,
+	);
+}
+
 /**
- * Find oldText in content, trying exact match first, then fuzzy match.
- * When fuzzy matching is used, the returned contentForReplacement is the
- * fuzzy-normalized version of the content (trailing whitespace stripped,
- * Unicode quotes/dashes normalized to ASCII).
+ * Find oldText in content, trying exact match, normalized substring matching,
+ * then line-window fuzzy matching. Exact offsets always refer to original
+ * content. Normalized substring offsets refer to normalized content.
  */
-export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
-	// Try exact match first
+export function fuzzyFindText(content: string, oldText: string, path = "file", options: EditMatchOptions = {}): FuzzyMatchResult {
 	const exactIndex = content.indexOf(oldText);
 	if (exactIndex !== -1) {
 		return {
@@ -220,31 +415,48 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 		};
 	}
 
-	// Try fuzzy match - work entirely in normalized space
+	const matchOptions = resolveMatchOptions(options);
+	if (!matchOptions.allowFuzzy) {
+		return emptyMatch(
+			content,
+			new Error(`Could not find the exact text in ${path}. Fuzzy matching is disabled.`),
+		);
+	}
+
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
 	const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
-
-	if (fuzzyIndex === -1) {
+	if (fuzzyIndex !== -1) {
 		return {
-			found: false,
-			index: -1,
-			matchLength: 0,
-			usedFuzzyMatch: false,
+			found: true,
+			index: fuzzyIndex,
+			matchLength: fuzzyOldText.length,
+			usedFuzzyMatch: true,
+			contentForReplacement: fuzzyContent,
+		};
+	}
+
+	const threshold = matchOptions.fuzzyThreshold;
+	const { best, aboveThresholdCount, secondBestScore } = findBestFuzzyMatch(content, oldText, threshold);
+	if (!best) {
+		return emptyMatch(content);
+	}
+
+	const dominant =
+		aboveThresholdCount > 1 &&
+		best.confidence >= DOMINANT_FUZZY_MIN_CONFIDENCE &&
+		best.confidence - secondBestScore >= DOMINANT_FUZZY_DELTA;
+	if (best.confidence >= threshold && (aboveThresholdCount === 1 || dominant)) {
+		return {
+			found: true,
+			index: best.startIndex,
+			matchLength: best.actualText.length,
+			usedFuzzyMatch: true,
 			contentForReplacement: content,
 		};
 	}
 
-	// When fuzzy matching, return offsets in normalized space. Callers can use
-	// the normalized content to compute replacements, then decide how much of
-	// that normalized output should be written back.
-	return {
-		found: true,
-		index: fuzzyIndex,
-		matchLength: fuzzyOldText.length,
-		usedFuzzyMatch: true,
-		contentForReplacement: fuzzyContent,
-	};
+	return emptyMatch(content, getFuzzyMatchError(path, oldText, best, threshold, aboveThresholdCount));
 }
 
 /** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
@@ -252,13 +464,26 @@ export function stripBom(content: string): { bom: string; text: string } {
 	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
-function countOccurrences(content: string, oldText: string): number {
-	const fuzzyContent = normalizeForFuzzyMatch(content);
-	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-	return fuzzyContent.split(fuzzyOldText).length - 1;
+function countLiteralOccurrences(content: string, oldText: string): number {
+	if (oldText.length === 0) return 0;
+	let count = 0;
+	let index = content.indexOf(oldText);
+	while (index !== -1) {
+		count++;
+		index = content.indexOf(oldText, index + oldText.length);
+	}
+	return count;
 }
 
-function findAllMatches(content: string, oldText: string): FuzzyMatchResult[] {
+function countOccurrences(content: string, oldText: string, options: EditMatchOptions): number {
+	const exactOccurrences = countLiteralOccurrences(content, oldText);
+	if (exactOccurrences > 0 || resolveMatchOptions(options).allowFuzzy === false) {
+		return exactOccurrences;
+	}
+	return countLiteralOccurrences(normalizeForFuzzyMatch(content), normalizeForFuzzyMatch(oldText));
+}
+
+function findAllMatches(content: string, oldText: string, path: string, options: EditMatchOptions): FuzzyMatchResult[] {
 	const matches: FuzzyMatchResult[] = [];
 	let index = content.indexOf(oldText);
 	while (index !== -1) {
@@ -275,6 +500,10 @@ function findAllMatches(content: string, oldText: string): FuzzyMatchResult[] {
 		return matches;
 	}
 
+	if (!resolveMatchOptions(options).allowFuzzy) {
+		return [emptyMatch(content, new Error(`Could not find the exact text in ${path}. Fuzzy matching is disabled.`))];
+	}
+
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
 	index = fuzzyContent.indexOf(fuzzyOldText);
@@ -288,10 +517,15 @@ function findAllMatches(content: string, oldText: string): FuzzyMatchResult[] {
 		});
 		index = fuzzyContent.indexOf(fuzzyOldText, index + fuzzyOldText.length);
 	}
-	return matches;
+	if (matches.length > 0) {
+		return matches;
+	}
+
+	return [fuzzyFindText(content, oldText, path, options)];
 }
 
-function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
+function getNotFoundError(path: string, editIndex: number, totalEdits: number, cause?: Error): Error {
+	if (cause) return cause;
 	if (totalEdits === 1) {
 		return new Error(
 			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
@@ -345,7 +579,7 @@ export function applyEditToNormalizedContent(
 	options: ApplyEditOptions = {},
 ): AppliedEditsResult {
 	if (!options.replaceAll) {
-		return applyEditsToNormalizedContent(normalizedContent, [edit], path);
+		return applyEditsToNormalizedContent(normalizedContent, [edit], path, options);
 	}
 
 	const normalizedEdit = {
@@ -356,13 +590,13 @@ export function applyEditToNormalizedContent(
 		throw getEmptyOldTextError(path, 0, 1);
 	}
 
-	const matches = findAllMatches(normalizedContent, normalizedEdit.oldText);
-	if (matches.length === 0) {
-		throw getNotFoundError(path, 0, 1);
+	const matches = findAllMatches(normalizedContent, normalizedEdit.oldText, path, options);
+	if (matches.length === 0 || matches.some((match) => !match.found)) {
+		throw getNotFoundError(path, 0, 1, matches.find((match) => match.error)?.error);
 	}
 
-	const usedFuzzyMatch = matches.some((match) => match.usedFuzzyMatch);
-	const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
+	const usesNormalizedBase = matches.some((match) => match.contentForReplacement !== normalizedContent);
+	const replacementBaseContent = usesNormalizedBase ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
 	const matchedEdits = matches.map((match, index) => ({
 		editIndex: index,
 		matchIndex: match.index,
@@ -371,7 +605,7 @@ export function applyEditToNormalizedContent(
 	}));
 
 	const baseContent = normalizedContent;
-	const newContent = usedFuzzyMatch
+	const newContent = usesNormalizedBase
 		? applyReplacementsPreservingUnchangedLines(normalizedContent, replacementBaseContent, matchedEdits)
 		: applyReplacements(replacementBaseContent, matchedEdits);
 
@@ -386,6 +620,7 @@ export function applyEditsToNormalizedContent(
 	normalizedContent: string,
 	edits: Edit[],
 	path: string,
+	options: EditMatchOptions = {},
 ): AppliedEditsResult {
 	const normalizedEdits = edits.map((edit) => ({
 		oldText: normalizeToLF(edit.oldText),
@@ -398,19 +633,22 @@ export function applyEditsToNormalizedContent(
 		}
 	}
 
-	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText));
-	const usedFuzzyMatch = initialMatches.some((match) => match.usedFuzzyMatch);
-	const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
+	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText, path, options));
+	const usesNormalizedBase = initialMatches.some((match) => match.contentForReplacement !== normalizedContent);
+	const replacementBaseContent = usesNormalizedBase ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
 
 	const matchedEdits: MatchedEdit[] = [];
 	for (let i = 0; i < normalizedEdits.length; i++) {
 		const edit = normalizedEdits[i];
-		const matchResult = fuzzyFindText(replacementBaseContent, edit.oldText);
+		const searchText = usesNormalizedBase ? normalizeForFuzzyMatch(edit.oldText) : edit.oldText;
+		const matchResult = usesNormalizedBase
+			? fuzzyFindText(replacementBaseContent, searchText, path, { ...options, allowFuzzy: false })
+			: initialMatches[i];
 		if (!matchResult.found) {
-			throw getNotFoundError(path, i, normalizedEdits.length);
+			throw getNotFoundError(path, i, normalizedEdits.length, matchResult.error);
 		}
 
-		const occurrences = countOccurrences(replacementBaseContent, edit.oldText);
+		const occurrences = countOccurrences(replacementBaseContent, searchText, options);
 		if (occurrences > 1) {
 			throw getDuplicateError(path, i, normalizedEdits.length, occurrences);
 		}
@@ -435,7 +673,7 @@ export function applyEditsToNormalizedContent(
 	}
 
 	const baseContent = normalizedContent;
-	const newContent = usedFuzzyMatch
+	const newContent = usesNormalizedBase
 		? applyReplacementsPreservingUnchangedLines(normalizedContent, replacementBaseContent, matchedEdits)
 		: applyReplacements(replacementBaseContent, matchedEdits);
 
@@ -600,6 +838,7 @@ export async function computeEditsDiff(
 	path: string,
 	edits: Edit[],
 	cwd: string,
+	options: EditMatchOptions = {},
 ): Promise<EditDiffResult | EditDiffError> {
 	const absolutePath = resolveToCwd(path, cwd);
 
@@ -618,7 +857,7 @@ export async function computeEditsDiff(
 		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
 		const { text: content } = stripBom(rawContent);
 		const normalizedContent = normalizeToLF(content);
-		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path, options);
 
 		// Generate the diff
 		return generateDiffString(baseContent, newContent);
@@ -639,7 +878,7 @@ export async function computeEditDiff(
 	options: ApplyEditOptions = {},
 ): Promise<EditDiffResult | EditDiffError> {
 	if (!options.replaceAll) {
-		return computeEditsDiff(path, [{ oldText, newText }], cwd);
+		return computeEditsDiff(path, [{ oldText, newText }], cwd, options);
 	}
 
 	const absolutePath = resolveToCwd(path, cwd);
