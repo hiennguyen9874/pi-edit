@@ -6,7 +6,9 @@ import { type Static, Type } from "typebox";
 import { renderDiff, Theme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+	applyEditsToNormalizedContent,
 	applyEditToNormalizedContent,
+	computeEditsDiff,
 	computeEditDiff,
 	detectLineEnding,
 	type EditMatchOptions,
@@ -29,26 +31,52 @@ type EditRenderState = {
 	callComponent?: EditCallRenderComponent;
 };
 
+const MAX_EDITS = 5;
+const MAX_EDIT_TEXT_LENGTH = 4_000;
+const MAX_TOTAL_EDIT_TEXT_LENGTH = 10_000;
+
+const editItemSchema = Type.Object({
+	old_string: Type.String({
+		minLength: 1,
+		maxLength: MAX_EDIT_TEXT_LENGTH,
+		description:
+		"The smallest exact text for one replacement. It must be unique in the original file and must not overlap another edit.",
+	}),
+	new_string: Type.String({
+		maxLength: MAX_EDIT_TEXT_LENGTH,
+		description: "The replacement text. May be empty to delete old_string.",
+	}),
+});
+
 const editSchema = Type.Object(
 	{
 		file_path: Type.String({ description: "The absolute or relative path to the file to modify." }),
-		old_string: Type.String({
-			description: "The exact text to replace, including whitespace. Must be unique unless replace_all is true.",
+		edits: Type.Array(editItemSchema, {
+			minItems: 1,
+			maxItems: MAX_EDITS,
+			description:
+				"One to five small replacements matched against the original file, with at most 10,000 characters combined. Do not overlap or nest edits, and merge changes affecting the same or nearby block.",
 		}),
-		new_string: Type.String({ description: "The replacement text." }),
-		replace_all: Type.Optional(Type.Boolean({ description: "Replace every occurrence. Defaults to false." })),
+		replace_all: Type.Optional(
+			Type.Boolean({ description: "Replace every occurrence. Only valid when edits contains one item." }),
+		),
 	},
 	{},
 );
 
 export type EditToolInput = Static<typeof editSchema>;
 
-type LegacyEditToolInput = Partial<EditToolInput> & {
-	path?: unknown;
+type LegacyEditItemInput = {
+	old_string?: unknown;
+	new_string?: unknown;
 	oldText?: unknown;
 	newText?: unknown;
 	old_str?: unknown;
 	new_str?: unknown;
+};
+
+type LegacyEditToolInput = Omit<Partial<EditToolInput>, "edits"> & LegacyEditItemInput & {
+	path?: unknown;
 	change_all?: unknown;
 	edits?: unknown;
 };
@@ -88,37 +116,52 @@ export interface EditToolOptions {
 	matching?: EditMatchOptions;
 }
 
+function getLegacyEditItem(input: LegacyEditItemInput): EditToolInput["edits"][number] | null {
+	const oldString =
+		typeof input.old_string === "string"
+			? input.old_string
+			: typeof input.old_str === "string"
+				? input.old_str
+				: typeof input.oldText === "string"
+					? input.oldText
+					: null;
+	const newString =
+		typeof input.new_string === "string"
+			? input.new_string
+			: typeof input.new_str === "string"
+				? input.new_str
+				: typeof input.newText === "string"
+					? input.newText
+					: null;
+
+	return oldString === null || newString === null ? null : { old_string: oldString, new_string: newString };
+}
+
+function hasTopLevelEdit(args: LegacyEditToolInput): boolean {
+	return [args.old_string, args.new_string, args.old_str, args.new_str, args.oldText, args.newText].some(
+		(value) => typeof value === "string",
+	);
+}
+
 function prepareEditArguments(input: unknown): EditToolInput {
 	if (!input || typeof input !== "object") {
 		return input as EditToolInput;
 	}
 
 	const args = input as LegacyEditToolInput;
-	const filePath =
-		typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : undefined;
-	let oldString =
-		typeof args.old_string === "string"
-			? args.old_string
-			: typeof args.old_str === "string"
-				? args.old_str
-				: typeof args.oldText === "string"
-					? args.oldText
-					: undefined;
-	let newString =
-		typeof args.new_string === "string"
-			? args.new_string
-			: typeof args.new_str === "string"
-				? args.new_str
-				: typeof args.newText === "string"
-					? args.newText
-					: undefined;
-
-	if (Array.isArray(args.edits) && args.edits.length === 1) {
-		const [edit] = args.edits as Array<{ oldText?: unknown; newText?: unknown }>;
-		oldString ??= typeof edit.oldText === "string" ? edit.oldText : undefined;
-		newString ??= typeof edit.newText === "string" ? edit.newText : undefined;
+	if (Array.isArray(args.edits) && hasTopLevelEdit(args)) {
+		throw new Error("Do not provide both edits and top-level old_string/new_string arguments.");
 	}
 
+	const filePath =
+		typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : undefined;
+	const edits = Array.isArray(args.edits)
+		? args.edits.map((edit) =>
+				edit && typeof edit === "object" ? getLegacyEditItem(edit as LegacyEditItemInput) : null,
+			)
+		: hasTopLevelEdit(args)
+			? [getLegacyEditItem(args)]
+			: undefined;
 	const replaceAll =
 		typeof args.replace_all === "boolean"
 			? args.replace_all
@@ -127,32 +170,57 @@ function prepareEditArguments(input: unknown): EditToolInput {
 				: undefined;
 
 	return {
-		...args,
 		...(filePath !== undefined ? { file_path: filePath } : {}),
-		...(oldString !== undefined ? { old_string: oldString } : {}),
-		...(newString !== undefined ? { new_string: newString } : {}),
+		...(edits !== undefined ? { edits } : {}),
 		...(replaceAll !== undefined ? { replace_all: replaceAll } : {}),
 	} as EditToolInput;
 }
 
-function validateEditInput(input: EditToolInput): Required<EditToolInput> {
-	return {
-		file_path: input.file_path,
-		old_string: input.old_string,
-		new_string: input.new_string,
-		replace_all: input.replace_all ?? false,
-	};
+type ValidatedEditInput = {
+	filePath: string;
+	edits: Array<{ oldText: string; newText: string }>;
+	replaceAll: boolean;
+};
+
+function validateEditInput(input: EditToolInput): ValidatedEditInput {
+	if (!input || typeof input !== "object" || typeof input.file_path !== "string") {
+		throw new Error("file_path must be a string.");
+	}
+	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > MAX_EDITS) {
+		throw new Error(`edits must contain between 1 and ${MAX_EDITS} items.`);
+	}
+	if (input.replace_all !== undefined && typeof input.replace_all !== "boolean") {
+		throw new Error("replace_all must be a boolean.");
+	}
+	if (input.replace_all && input.edits.length !== 1) {
+		throw new Error("replace_all is only valid when edits contains one item.");
+	}
+
+	let totalLength = 0;
+	const edits = input.edits.map((edit, index) => {
+		if (!edit || typeof edit.old_string !== "string" || typeof edit.new_string !== "string") {
+			throw new Error(`edits[${index}] must contain string old_string and new_string values.`);
+		}
+		if (edit.old_string.length === 0) {
+			throw new Error(`edits[${index}].old_string must not be empty.`);
+		}
+		if (edit.old_string.length > MAX_EDIT_TEXT_LENGTH || edit.new_string.length > MAX_EDIT_TEXT_LENGTH) {
+			throw new Error(`edits[${index}] old_string and new_string must each be at most ${MAX_EDIT_TEXT_LENGTH} characters.`);
+		}
+		totalLength += edit.old_string.length + edit.new_string.length;
+		return { oldText: edit.old_string, newText: edit.new_string };
+	});
+	if (totalLength > MAX_TOTAL_EDIT_TEXT_LENGTH) {
+		throw new Error(`The combined edit text must be at most ${MAX_TOTAL_EDIT_TEXT_LENGTH} characters.`);
+	}
+
+	return { filePath: input.file_path, edits, replaceAll: input.replace_all ?? false };
 }
 
-type RenderableEditArgs = {
+type RenderableEditArgs = LegacyEditItemInput & {
 	file_path?: string;
 	path?: string;
-	old_string?: string;
-	new_string?: string;
-	old_str?: string;
-	new_str?: string;
-	oldText?: string;
-	newText?: string;
+	edits?: unknown;
 	replace_all?: boolean;
 	change_all?: boolean;
 };
@@ -194,37 +262,45 @@ function getEditCallRenderComponent(state: EditRenderState, lastComponent: unkno
 
 function getRenderablePreviewInput(
 	args: RenderableEditArgs | undefined,
-): { path: string; oldString: string; newString: string; replaceAll: boolean } | null {
+): { path: string; edits: Array<{ oldText: string; newText: string }>; replaceAll: boolean } | null {
 	if (!args) {
 		return null;
 	}
 
 	const path = typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : null;
-	if (!path) {
+	if (!path || (Array.isArray(args.edits) && hasTopLevelEdit(args))) {
 		return null;
 	}
 
-	const oldString =
-		typeof args.old_string === "string"
-			? args.old_string
-			: typeof args.old_str === "string"
-				? args.old_str
-				: typeof args.oldText === "string"
-					? args.oldText
-					: null;
-	const newString =
-		typeof args.new_string === "string"
-			? args.new_string
-			: typeof args.new_str === "string"
-				? args.new_str
-				: typeof args.newText === "string"
-					? args.newText
-					: null;
-	if (oldString === null || newString === null) {
+	const editItems = Array.isArray(args.edits)
+		? args.edits.map((edit) =>
+				edit && typeof edit === "object" ? getLegacyEditItem(edit as LegacyEditItemInput) : null,
+			)
+		: [getLegacyEditItem(args)];
+	if (editItems.length < 1 || editItems.length > MAX_EDITS || editItems.some((edit) => edit === null)) {
 		return null;
 	}
 
-	return { path, oldString, newString, replaceAll: args.replace_all ?? args.change_all ?? false };
+	const canonicalEdits = editItems as EditToolInput["edits"];
+	const totalLength = canonicalEdits.reduce((total, edit) => total + edit.old_string.length + edit.new_string.length, 0);
+	if (
+		canonicalEdits.some(
+			(edit) =>
+				edit.old_string.length < 1 ||
+				edit.old_string.length > MAX_EDIT_TEXT_LENGTH ||
+				edit.new_string.length > MAX_EDIT_TEXT_LENGTH,
+		) ||
+		totalLength > MAX_TOTAL_EDIT_TEXT_LENGTH
+	) {
+		return null;
+	}
+
+	const edits = canonicalEdits.map((edit) => ({ oldText: edit.old_string, newText: edit.new_string }));
+	const replaceAll = args.replace_all ?? args.change_all ?? false;
+	if (replaceAll && edits.length !== 1) {
+		return null;
+	}
+	return { path, edits, replaceAll };
 }
 
 function formatEditCall(args: RenderableEditArgs | undefined, theme: Theme, cwd: string): string {
@@ -329,19 +405,22 @@ export function createEditToolDefinition(
 		name: "edit",
 		label: "edit",
 		description:
-			"Performs exact string replacement in a file. old_string must match exactly, including whitespace, and be unique unless replace_all is true.",
-		promptSnippet: "Perform exact string replacement in a file",
+			"Performs one to five small, exact replacements in one file. Each old_string must match a unique, non-overlapping region of the original file. Merge changes affecting the same or nearby block, and do not include large unchanged regions.",
+		promptSnippet: "Perform small, exact string replacements in a file",
 		promptGuidelines: [
-			"Use edit with file_path, old_string, and new_string for precise replacements.",
-			"old_string must match exactly, including whitespace and newlines, and be unique unless replace_all is true.",
-			"Use replace_all only when the user wants every occurrence replaced.",
+			"Use edit with file_path and an edits array containing one to five small replacements.",
+			"When changing multiple separate locations in one file, use one call with multiple edits.",
+			"Each old_string must be the smallest unique exact match in the original file, including whitespace and newlines.",
+			"Edits must not overlap or nest. Merge edits affecting the same or nearby block.",
+			"Do not include large unchanged regions or replace whole files.",
+			"Use replace_all only with one edit when every occurrence should change.",
 		],
 		parameters: editSchema,
 		renderShell: "self",
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
-			const { file_path, old_string, new_string, replace_all } = validateEditInput(input);
-			const absolutePath = resolveToCwd(file_path, cwd);
+			const { filePath, edits, replaceAll } = validateEditInput(input);
+			const absolutePath = resolveToCwd(filePath, cwd);
 
 			return withFileMutationQueue(absolutePath, async () => {
 				const throwIfAborted = (): void => {
@@ -356,7 +435,7 @@ export function createEditToolDefinition(
 					throwIfAborted();
 					const errorMessage =
 						error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
-					throw new Error(`Could not edit file: ${file_path}. ${errorMessage}.`);
+					throw new Error(`Could not edit file: ${filePath}. ${errorMessage}.`);
 				}
 				throwIfAborted();
 
@@ -367,12 +446,12 @@ export function createEditToolDefinition(
 				const { bom, text: content } = stripBom(rawContent);
 				const originalEnding = detectLineEnding(content);
 				const normalizedContent = normalizeToLF(content);
-				const { baseContent, newContent } = applyEditToNormalizedContent(
-					normalizedContent,
-					{ oldText: old_string, newText: new_string },
-					file_path,
-					{ ...matching, replaceAll: replace_all },
-				);
+				const { baseContent, newContent } = replaceAll
+					? applyEditToNormalizedContent(normalizedContent, edits[0], filePath, {
+							...matching,
+							replaceAll: true,
+						})
+					: applyEditsToNormalizedContent(normalizedContent, edits, filePath, matching);
 				throwIfAborted();
 
 				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
@@ -380,12 +459,15 @@ export function createEditToolDefinition(
 				throwIfAborted();
 
 				const diffResult = generateDiffString(baseContent, newContent);
-				const patch = generateUnifiedPatch(file_path, baseContent, newContent);
+				const patch = generateUnifiedPatch(filePath, baseContent, newContent);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Successfully replaced text in ${file_path}.`,
+							text:
+								edits.length === 1
+									? `Successfully replaced text in ${filePath}.`
+									: `Successfully applied ${edits.length} edits to ${filePath}.`,
 						},
 					],
 					details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
@@ -395,14 +477,7 @@ export function createEditToolDefinition(
 		renderCall(args, theme, context) {
 			const component = getEditCallRenderComponent(context.state, context.lastComponent);
 			const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);
-			const argsKey = previewInput
-				? JSON.stringify({
-						path: previewInput.path,
-						oldString: previewInput.oldString,
-						newString: previewInput.newString,
-						replaceAll: previewInput.replaceAll,
-					})
-				: undefined;
+			const argsKey = previewInput ? JSON.stringify(previewInput) : undefined;
 
 			if (component.previewArgsKey !== argsKey) {
 				component.preview = undefined;
@@ -414,13 +489,16 @@ export function createEditToolDefinition(
 			if (context.argsComplete && previewInput && !component.preview && !component.previewPending) {
 				component.previewPending = true;
 				const requestKey = argsKey;
-				void computeEditDiff(
-					previewInput.path,
-					previewInput.oldString,
-					previewInput.newString,
-					context.cwd,
-					{ ...matching, replaceAll: previewInput.replaceAll },
-				).then((preview) => {
+				const previewPromise = previewInput.replaceAll
+					? computeEditDiff(
+							previewInput.path,
+							previewInput.edits[0].oldText,
+							previewInput.edits[0].newText,
+							context.cwd,
+							{ ...matching, replaceAll: true },
+						)
+					: computeEditsDiff(previewInput.path, previewInput.edits, context.cwd, matching);
+				void previewPromise.then((preview) => {
 					if (component.previewArgsKey === requestKey) {
 						setEditPreview(component, preview, requestKey);
 						context.invalidate();
@@ -433,14 +511,7 @@ export function createEditToolDefinition(
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state.callComponent;
 			const previewInput = getRenderablePreviewInput(context.args as RenderableEditArgs | undefined);
-			const argsKey = previewInput
-				? JSON.stringify({
-						path: previewInput.path,
-						oldString: previewInput.oldString,
-						newString: previewInput.newString,
-						replaceAll: previewInput.replaceAll,
-					})
-				: undefined;
+			const argsKey = previewInput ? JSON.stringify(previewInput) : undefined;
 			const typedResult = result as EditToolResultLike;
 			const resultDiff = !context.isError ? typedResult.details?.diff : undefined;
 			let changed = false;

@@ -8,7 +8,7 @@ Help agents change `pi-edit` behavior without breaking the Pi extension contract
 
 - Treat `src/index.ts` as the public extension boundary: it registers the tool on `session_start`, defines the user-facing schema, prepares legacy aliases, executes file mutation, and renders previews/results.
 - Keep exact replacement semantics centralized in `src/edit-diff.ts`; do not duplicate matching, fuzzy normalization, replacement, or diff generation logic in the extension entrypoint.
-- Preserve legacy input compatibility in `prepareEditArguments` unless the task explicitly removes it. Supported aliases include `path`, `oldText`, `newText`, `old_str`, `new_str`, `change_all`, and a single-item `edits` array.
+- Preserve legacy input compatibility in `prepareEditArguments` unless the task explicitly removes it. Supported aliases include `path`, top-level or nested `oldText`/`newText`, `old_str`/`new_str`, and `change_all`.
 - Preserve line-ending and BOM behavior: execution strips BOM before matching, normalizes to LF for edit logic, restores the original dominant line ending, and writes the BOM back when present.
 - Use `withFileMutationQueue(absolutePath, ...)` for filesystem mutations to keep edits to the same file serialized.
 - Keep preview behavior non-mutating: preview rendering should call diff computation helpers and must not write files.
@@ -27,7 +27,7 @@ Help agents change `pi-edit` behavior without breaking the Pi extension contract
 
 - `replace_all` changes duplicate handling: without it, duplicate old text is rejected; with it, every match is replaced.
 - Fuzzy matching normalizes trailing whitespace, smart quotes, unicode dashes, and unicode spaces; unchanged line blocks should keep original bytes where possible.
-- Multiple edit support exists in `src/edit-diff.ts`, but the exported tool schema in `src/index.ts` exposes a single `old_string`/`new_string` operation plus `replace_all`.
+- The exported tool accepts one to five bounded `edits` matched against the original file. `replace_all` is only valid for a single-item array; legacy top-level edit arguments are normalized into that canonical shape.
 - Error strings are user-facing and tested indirectly by behavior; avoid casual rewrites unless the task is about UX/errors.
 
 ## Related Instructions

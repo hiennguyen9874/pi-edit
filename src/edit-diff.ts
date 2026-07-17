@@ -525,11 +525,14 @@ function findAllMatches(content: string, oldText: string, path: string, options:
 }
 
 function getNotFoundError(path: string, editIndex: number, totalEdits: number, cause?: Error): Error {
-	if (cause) return cause;
+	if (totalEdits === 1 && cause) return cause;
 	if (totalEdits === 1) {
 		return new Error(
 			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
 		);
+	}
+	if (cause) {
+		return new Error(`Could not apply edits[${editIndex}] in ${path}. ${cause.message}`);
 	}
 	return new Error(
 		`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,

@@ -2,7 +2,12 @@ import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyEditToNormalizedContent, computeEditDiff } from "../src/edit-diff.ts";
+import {
+	applyEditsToNormalizedContent,
+	applyEditToNormalizedContent,
+	computeEditDiff,
+	computeEditsDiff,
+} from "../src/edit-diff.ts";
 import { createEditToolDefinition } from "../src/index.ts";
 
 describe("applyEditToNormalizedContent", () => {
@@ -104,7 +109,35 @@ describe("applyEditToNormalizedContent", () => {
 	});
 });
 
-describe("edit tool matching options", () => {
+describe("applyEditsToNormalizedContent", () => {
+	it("applies disjoint edits matched against the original content", () => {
+		const result = applyEditsToNormalizedContent(
+			"const first = 1;\nconst second = 2;\n",
+			[
+				{ oldText: "first = 1", newText: "first = 10" },
+				{ oldText: "second = 2", newText: "second = 20" },
+			],
+			"file.ts",
+		);
+
+		expect(result.newContent).toBe("const first = 10;\nconst second = 20;\n");
+	});
+
+	it("rejects overlapping edits", () => {
+		expect(() =>
+			applyEditsToNormalizedContent(
+				"const value = 1;\n",
+				[
+					{ oldText: "const value = 1;", newText: "const value = 2;" },
+					{ oldText: "value = 1", newText: "value = 3" },
+				],
+				"file.ts",
+			),
+		).toThrow("overlap");
+	});
+});
+
+describe("edit tool input", () => {
 	let tempDir: string | undefined;
 
 	afterEach(async () => {
@@ -133,12 +166,198 @@ describe("edit tool matching options", () => {
 		await expect(
 			tool.execute(
 				"call-id",
-				{ file_path: filePath, old_string: 'const label = "Save"', new_string: 'const label = "Saved"' },
+				{
+					file_path: filePath,
+					edits: [{ old_string: 'const label = "Save"', new_string: 'const label = "Saved"' }],
+				},
 				undefined,
 				undefined,
 				undefined as never,
 			),
 		).rejects.toThrow("Fuzzy matching is disabled");
 		expect(await readFile(filePath, "utf-8")).toBe("const label = “Save”\n");
+	});
+
+	it("applies multiple edits and produces the same preview diff", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.ts");
+		await writeFile(filePath, "const first = 1;\nconst second = 2;\n", "utf-8");
+		const internalEdits = [
+			{ oldText: "first = 1", newText: "first = 10" },
+			{ oldText: "second = 2", newText: "second = 20" },
+		];
+		const preview = await computeEditsDiff(filePath, internalEdits, tempDir);
+		const tool = createEditToolDefinition(tempDir);
+
+		const result = await tool.execute(
+			"call-id",
+			{
+				file_path: filePath,
+				edits: internalEdits.map((edit) => ({ old_string: edit.oldText, new_string: edit.newText })),
+			},
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		expect(await readFile(filePath, "utf-8")).toBe("const first = 10;\nconst second = 20;\n");
+		expect(preview).not.toHaveProperty("error");
+		expect(result.details?.diff).toBe("diff" in preview ? preview.diff : undefined);
+	});
+
+	it("does not write when any edit fails", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.ts");
+		const original = "const first = 1;\nconst second = 2;\n";
+		await writeFile(filePath, original, "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+
+		await expect(
+			tool.execute(
+				"call-id",
+				{
+					file_path: filePath,
+					edits: [
+						{ old_string: "first = 1", new_string: "first = 10" },
+						{ old_string: "missing = 2", new_string: "missing = 20" },
+					],
+				},
+				undefined,
+				undefined,
+				undefined as never,
+			),
+		).rejects.toThrow("edits[1]");
+		expect(await readFile(filePath, "utf-8")).toBe(original);
+	});
+
+	it("accepts five edits and rejects six", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.txt");
+		await writeFile(filePath, "one two three four five six\n", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+		const fiveEdits = ["one", "two", "three", "four", "five"].map((text) => ({
+			old_string: text,
+			new_string: text.toUpperCase(),
+		}));
+
+		await tool.execute(
+			"call-id",
+			{ file_path: filePath, edits: fiveEdits },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		expect(await readFile(filePath, "utf-8")).toBe("ONE TWO THREE FOUR FIVE six\n");
+
+		await expect(
+			tool.execute(
+				"call-id",
+				{ file_path: filePath, edits: [...fiveEdits, { old_string: "six", new_string: "SIX" }] },
+				undefined,
+				undefined,
+				undefined as never,
+			),
+		).rejects.toThrow("between 1 and 5");
+	});
+
+	it("enforces individual and aggregate edit size limits", async () => {
+		const tool = createEditToolDefinition(tmpdir());
+		const execute = (edits: Array<{ old_string: string; new_string: string }>) =>
+			tool.execute("call-id", { file_path: "file.txt", edits }, undefined, undefined, undefined as never);
+
+		await expect(execute([{ old_string: "a".repeat(4_001), new_string: "b" }])).rejects.toThrow(
+			"at most 4000 characters",
+		);
+		await expect(
+			execute([
+				{ old_string: "a".repeat(3_000), new_string: "b".repeat(3_000) },
+				{ old_string: "c".repeat(3_000), new_string: "d".repeat(2_000) },
+			]),
+		).rejects.toThrow("at most 10000 characters");
+	});
+
+	it("rejects replace_all with multiple edits", async () => {
+		const tool = createEditToolDefinition(tmpdir());
+
+		await expect(
+			tool.execute(
+				"call-id",
+				{
+					file_path: "file.txt",
+					edits: [
+						{ old_string: "one", new_string: "ONE" },
+						{ old_string: "two", new_string: "TWO" },
+					],
+					replace_all: true,
+				},
+				undefined,
+				undefined,
+				undefined as never,
+			),
+		).rejects.toThrow("only valid when edits contains one item");
+	});
+
+	it("normalizes legacy top-level arguments and replace_all", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.txt");
+		await writeFile(filePath, "old old\n", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+		const prepared = tool.prepareArguments?.({
+			path: filePath,
+			oldText: "old",
+			newText: "new",
+			change_all: true,
+		});
+
+		expect(prepared).toEqual({
+			file_path: filePath,
+			edits: [{ old_string: "old", new_string: "new" }],
+			replace_all: true,
+		});
+		await tool.execute("call-id", prepared!, undefined, undefined, undefined as never);
+		expect(await readFile(filePath, "utf-8")).toBe("new new\n");
+	});
+
+	it("normalizes legacy camel-case edit arrays", () => {
+		const tool = createEditToolDefinition(tmpdir());
+
+		expect(
+			tool.prepareArguments?.({
+				path: "file.txt",
+				edits: [
+					{ oldText: "one", newText: "ONE" },
+					{ oldText: "two", newText: "TWO" },
+				],
+			}),
+		).toEqual({
+			file_path: "file.txt",
+			edits: [
+				{ old_string: "one", new_string: "ONE" },
+				{ old_string: "two", new_string: "TWO" },
+			],
+		});
+	});
+
+	it("preserves BOM and CRLF when applying multiple edits", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.txt");
+		await writeFile(filePath, "\uFEFFone\r\ntwo\r\n", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+
+		await tool.execute(
+			"call-id",
+			{
+				file_path: filePath,
+				edits: [
+					{ old_string: "one", new_string: "ONE" },
+					{ old_string: "two", new_string: "TWO" },
+				],
+			},
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		expect(await readFile(filePath, "utf-8")).toBe("\uFEFFONE\r\nTWO\r\n");
 	});
 });

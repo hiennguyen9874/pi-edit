@@ -4,7 +4,7 @@ A Pi coding-agent extension that registers an `edit` tool for exact string repla
 
 ## Features
 
-- **Exact string replacement** — `old_string` must match exactly, including whitespace and newlines
+- **Exact string replacement** — each `edits[].old_string` must match exactly, including whitespace and newlines
 - **Fuzzy matching** — configurable similarity-based fallback with smart quote / Unicode normalization
 - **`replace_all`** — replace every occurrence when desired
 - **Diff previews** — async diff computation shown in the TUI before tool execution
@@ -13,8 +13,8 @@ A Pi coding-agent extension that registers an `edit` tool for exact string repla
 - **BOM preservation** — strips BOM for matching, restores on write
 - **Configurable settings** — global (`~/.pi-agent/settings.json`) and project (`.pi/settings.json`)
 - **Pluggable file operations** — override read/write/access for remote editing (e.g. SSH)
-- **Legacy argument aliases** — supports `path`, `oldText`, `newText`, `old_str`, `new_str`, `change_all`, `edits`
-- **Multi-edit support** — apply multiple replacements in a single call with overlap detection
+- **Legacy argument aliases** — supports `path`, `oldText`, `newText`, `old_str`, `new_str`, `change_all`, and camel-case edit items
+- **Bounded multi-edit support** — atomically apply up to five small, non-overlapping replacements in one call
 - **macOS path variants** — handles NFD unicode normalization, curly quotes, and narrow no-break spaces in screenshot filenames
 
 ## Install
@@ -35,13 +35,22 @@ npm run test:watch
 ```json
 {
   "file_path": "src/example.ts",
-  "old_string": "text to replace",
-  "new_string": "replacement text",
-  "replace_all": false
+  "edits": [
+    {
+      "old_string": "first text to replace",
+      "new_string": "first replacement"
+    },
+    {
+      "old_string": "second text to replace",
+      "new_string": "second replacement"
+    }
+  ]
 }
 ```
 
-Legacy aliases are also accepted:
+Each call accepts one to five edits. Each `old_string` and `new_string` is limited to 4,000 characters, and all edit text combined is limited to 10,000 characters. Edits are matched against the original file, must be unique and non-overlapping, and are written atomically only after every edit succeeds.
+
+`replace_all` remains available when the array contains exactly one edit. Legacy top-level and camel-case arguments are also accepted:
 
 ```json
 {
@@ -49,17 +58,6 @@ Legacy aliases are also accepted:
   "oldText": "text to replace",
   "newText": "replacement text",
   "change_all": false
-}
-```
-
-Or with `edits` array (single edit):
-
-```json
-{
-  "path": "src/example.ts",
-  "edits": [
-    { "oldText": "text to replace", "newText": "replacement text" }
-  ]
 }
 ```
 
