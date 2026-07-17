@@ -27,7 +27,7 @@ Help agents change `pi-edit` behavior without breaking the Pi extension contract
 
 - `replace_all` changes duplicate handling: without it, duplicate old text is rejected; with it, every match is replaced.
 - Fuzzy matching normalizes trailing whitespace, smart quotes, unicode dashes, and unicode spaces; unchanged line blocks should keep original bytes where possible.
-- The exported tool accepts one to five bounded `edits` matched against the original file. `replace_all` is only valid for a single-item array; legacy top-level edit arguments are normalized into that canonical shape.
+- The exported tool accepts one or more bounded `edits` matched against the original file. Five or fewer is recommended; larger batches succeed with a warning when otherwise valid. `replace_all` is only valid for a single-item array; legacy top-level edit arguments are normalized into that canonical shape.
 - Error strings are user-facing and tested indirectly by behavior; avoid casual rewrites unless the task is about UX/errors.
 
 ## Related Instructions

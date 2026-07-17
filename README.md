@@ -14,7 +14,7 @@ A Pi coding-agent extension that registers an `edit` tool for exact string repla
 - **Configurable settings** — global (`~/.pi-agent/settings.json`) and project (`.pi/settings.json`)
 - **Pluggable file operations** — override read/write/access for remote editing (e.g. SSH)
 - **Legacy argument aliases** — supports `path`, `oldText`, `newText`, `old_str`, `new_str`, `change_all`, and camel-case edit items
-- **Bounded multi-edit support** — atomically apply up to five small, non-overlapping replacements in one call
+- **Multi-edit support** — atomically applies small, non-overlapping replacements and warns above five per call
 - **macOS path variants** — handles NFD unicode normalization, curly quotes, and narrow no-break spaces in screenshot filenames
 
 ## Install
@@ -48,7 +48,7 @@ npm run test:watch
 }
 ```
 
-Each call accepts one to five edits. Each `old_string` and `new_string` is limited to 4,000 characters, and all edit text combined is limited to 10,000 characters. Edits are matched against the original file, must be unique and non-overlapping, and are written atomically only after every edit succeeds.
+Each call accepts one or more edits; five or fewer is recommended, and larger valid batches return a warning. Each `old_string` and `new_string` is limited to 4,000 characters, and all edit text combined is limited to 10,000 characters. Edits are matched against the original file, must be unique and non-overlapping, and are written atomically only after every edit succeeds.
 
 `replace_all` remains available when the array contains exactly one edit. Legacy top-level and camel-case arguments are also accepted:
 

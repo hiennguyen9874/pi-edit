@@ -31,7 +31,7 @@ type EditRenderState = {
 	callComponent?: EditCallRenderComponent;
 };
 
-const MAX_EDITS = 5;
+const RECOMMENDED_MAX_EDITS = 5;
 const MAX_EDIT_TEXT_LENGTH = 4_000;
 const MAX_TOTAL_EDIT_TEXT_LENGTH = 10_000;
 
@@ -53,9 +53,7 @@ const editSchema = Type.Object(
 		file_path: Type.String({ description: "The absolute or relative path to the file to modify." }),
 		edits: Type.Array(editItemSchema, {
 			minItems: 1,
-			maxItems: MAX_EDITS,
-			description:
-				"One to five small replacements matched against the original file, with at most 10,000 characters combined. Do not overlap or nest edits, and merge changes affecting the same or nearby block.",
+			description: `One or more non-overlapping replacements, each matched against the original file rather than earlier edits. Prefer at most ${RECOMMENDED_MAX_EDITS} edits; larger valid batches return a warning. Maximum ${MAX_TOTAL_EDIT_TEXT_LENGTH.toLocaleString("en-US")} characters combined.`,
 		}),
 		replace_all: Type.Optional(
 			Type.Boolean({ description: "Replace every occurrence. Only valid when edits contains one item." }),
@@ -88,6 +86,8 @@ export interface EditToolDetails {
 	patch: string;
 	/** Line number of the first change in the new file (for editor navigation) */
 	firstChangedLine?: number;
+	/** Non-fatal guidance about the completed edit */
+	warning?: string;
 }
 
 /**
@@ -180,14 +180,21 @@ type ValidatedEditInput = {
 	filePath: string;
 	edits: Array<{ oldText: string; newText: string }>;
 	replaceAll: boolean;
+	warning?: string;
 };
+
+function getEditCountWarning(editCount: number): string | undefined {
+	return editCount > RECOMMENDED_MAX_EDITS
+		? `Warning: this call contains ${editCount} edits; prefer ${RECOMMENDED_MAX_EDITS} or fewer per call.`
+		: undefined;
+}
 
 function validateEditInput(input: EditToolInput): ValidatedEditInput {
 	if (!input || typeof input !== "object" || typeof input.file_path !== "string") {
 		throw new Error("file_path must be a string.");
 	}
-	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > MAX_EDITS) {
-		throw new Error(`edits must contain between 1 and ${MAX_EDITS} items.`);
+	if (!Array.isArray(input.edits) || input.edits.length < 1) {
+		throw new Error("edits must contain at least one item.");
 	}
 	if (input.replace_all !== undefined && typeof input.replace_all !== "boolean") {
 		throw new Error("replace_all must be a boolean.");
@@ -214,7 +221,12 @@ function validateEditInput(input: EditToolInput): ValidatedEditInput {
 		throw new Error(`The combined edit text must be at most ${MAX_TOTAL_EDIT_TEXT_LENGTH} characters.`);
 	}
 
-	return { filePath: input.file_path, edits, replaceAll: input.replace_all ?? false };
+	return {
+		filePath: input.file_path,
+		edits,
+		replaceAll: input.replace_all ?? false,
+		warning: getEditCountWarning(edits.length),
+	};
 }
 
 type RenderableEditArgs = LegacyEditItemInput & {
@@ -277,7 +289,7 @@ function getRenderablePreviewInput(
 				edit && typeof edit === "object" ? getLegacyEditItem(edit as LegacyEditItemInput) : null,
 			)
 		: [getLegacyEditItem(args)];
-	if (editItems.length < 1 || editItems.length > MAX_EDITS || editItems.some((edit) => edit === null)) {
+	if (editItems.length < 1 || editItems.some((edit) => edit === null)) {
 		return null;
 	}
 
@@ -329,12 +341,16 @@ function formatEditResult(
 		return theme.fg("error", errorText);
 	}
 
+	const output: string[] = [];
+	if (result.details?.warning) {
+		output.push(result.details.warning);
+	}
 	const resultDiff = result.details?.diff;
 	if (resultDiff && resultDiff !== previewDiff) {
-		return renderDiff(resultDiff, { filePath: rawPath ?? undefined });
+		output.push(renderDiff(resultDiff, { filePath: rawPath ?? undefined }));
 	}
 
-	return undefined;
+	return output.length > 0 ? output.join("\n\n") : undefined;
 }
 
 function getEditHeaderBg(
@@ -404,22 +420,17 @@ export function createEditToolDefinition(
 	return {
 		name: "edit",
 		label: "edit",
-		description:
-			"Performs one to five small, exact replacements in one file. Each old_string must match a unique, non-overlapping region of the original file. Merge changes affecting the same or nearby block, and do not include large unchanged regions.",
+		description: "Edits one file with one or more exact text replacements.",
 		promptSnippet: "Perform small, exact string replacements in a file",
 		promptGuidelines: [
-			"Use edit with file_path and an edits array containing one to five small replacements.",
-			"When changing multiple separate locations in one file, use one call with multiple edits.",
-			"Each old_string must be the smallest unique exact match in the original file, including whitespace and newlines.",
-			"Edits must not overlap or nest. Merge edits affecting the same or nearby block.",
+			`Use one call for related changes in a file; prefer at most ${RECOMMENDED_MAX_EDITS} edits by merging nearby changes. More than ${RECOMMENDED_MAX_EDITS} valid edits are allowed but return a warning.`,
 			"Do not include large unchanged regions or replace whole files.",
-			"Use replace_all only with one edit when every occurrence should change.",
 		],
 		parameters: editSchema,
 		renderShell: "self",
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
-			const { filePath, edits, replaceAll } = validateEditInput(input);
+			const { filePath, edits, replaceAll, warning } = validateEditInput(input);
 			const absolutePath = resolveToCwd(filePath, cwd);
 
 			return withFileMutationQueue(absolutePath, async () => {
@@ -460,17 +471,23 @@ export function createEditToolDefinition(
 
 				const diffResult = generateDiffString(baseContent, newContent);
 				const patch = generateUnifiedPatch(filePath, baseContent, newContent);
+				const successMessage =
+					edits.length === 1
+						? `Successfully replaced text in ${filePath}.`
+						: `Successfully applied ${edits.length} edits to ${filePath}.`;
 				return {
 					content: [
 						{
 							type: "text",
-							text:
-								edits.length === 1
-									? `Successfully replaced text in ${filePath}.`
-									: `Successfully applied ${edits.length} edits to ${filePath}.`,
+							text: warning ? `${warning}\n${successMessage}` : successMessage,
 						},
 					],
-					details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
+					details: {
+						diff: diffResult.diff,
+						patch,
+						firstChangedLine: diffResult.firstChangedLine,
+						...(warning ? { warning } : {}),
+					},
 				};
 			});
 		},

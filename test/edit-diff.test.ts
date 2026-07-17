@@ -230,34 +230,44 @@ describe("edit tool input", () => {
 		expect(await readFile(filePath, "utf-8")).toBe(original);
 	});
 
-	it("accepts five edits and rejects six", async () => {
+	it("accepts more than five edits with a warning", async () => {
 		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
 		const filePath = join(tempDir, "file.txt");
-		await writeFile(filePath, "one two three four five six\n", "utf-8");
+		const original = "one two three four five six\n";
+		await writeFile(filePath, original, "utf-8");
 		const tool = createEditToolDefinition(tempDir);
-		const fiveEdits = ["one", "two", "three", "four", "five"].map((text) => ({
+		const edits = ["one", "two", "three", "four", "five", "six"].map((text) => ({
 			old_string: text,
 			new_string: text.toUpperCase(),
 		}));
 
-		await tool.execute(
+		expect(tool.parameters.properties.edits).not.toHaveProperty("maxItems");
+		const fiveEditResult = await tool.execute(
 			"call-id",
-			{ file_path: filePath, edits: fiveEdits },
+			{ file_path: filePath, edits: edits.slice(0, 5) },
 			undefined,
 			undefined,
 			undefined as never,
 		);
-		expect(await readFile(filePath, "utf-8")).toBe("ONE TWO THREE FOUR FIVE six\n");
+		expect(fiveEditResult.details?.warning).toBeUndefined();
 
-		await expect(
-			tool.execute(
-				"call-id",
-				{ file_path: filePath, edits: [...fiveEdits, { old_string: "six", new_string: "SIX" }] },
-				undefined,
-				undefined,
-				undefined as never,
-			),
-		).rejects.toThrow("between 1 and 5");
+		await writeFile(filePath, original, "utf-8");
+		const sixEditResult = await tool.execute(
+			"call-id",
+			{ file_path: filePath, edits },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		expect(await readFile(filePath, "utf-8")).toBe("ONE TWO THREE FOUR FIVE SIX\n");
+		expect(sixEditResult.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("Warning: this call contains 6 edits; prefer 5 or fewer per call."),
+		});
+		expect(sixEditResult.details?.warning).toBe(
+			"Warning: this call contains 6 edits; prefer 5 or fewer per call.",
+		);
 	});
 
 	it("enforces individual and aggregate edit size limits", async () => {

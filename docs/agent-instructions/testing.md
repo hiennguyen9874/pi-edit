@@ -25,7 +25,7 @@ Help agents add or run focused tests for edit matching and replacement behavior.
 ## Gotchas
 
 - There is no dedicated typecheck or coverage script in `package.json`.
-- The edit tool schema exposes single-edit input, while `src/edit-diff.ts` also has multi-edit helpers; tests should target the layer actually changed.
+- The edit tool schema and `src/edit-diff.ts` both support multi-edit input; test the schema, execution, or pure helper layer that owns the changed behavior.
 
 ## Related Instructions
 
