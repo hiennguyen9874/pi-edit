@@ -1,0 +1,154 @@
+{
+    "model": "deepseek-v4-pro",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n- read: Read file contents\n- bash: Execute bash commands (ls, grep, find, etc.)\n- edit: Perform small, exact string replacements in a file\n- write: Create or overwrite files\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n- Use bash for file operations like ls, rg, find\n- Use read to examine files instead of cat or sed.\n- Use edit with file_path and an edits array containing one to five small replacements.\n- When changing multiple separate locations in one file, use one call with multiple edits.\n- Each old_string must be the smallest unique exact match in the original file, including whitespace and newlines.\n- Edits must not overlap or nest. Merge edits affecting the same or nearby block.\n- Do not include large unchanged regions or replace whole files.\n- Use replace_all only with one edit when every occurrence should change.\n- Use write only for new files or complete rewrites.\n- Be concise in your responses\n- Show file paths clearly when working with files\n\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /home/hiennx/.nvm/versions/node/v24.5.0/lib/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /home/hiennx/.nvm/versions/node/v24.5.0/lib/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /home/hiennx/.nvm/versions/node/v24.5.0/lib/node_modules/@earendil-works/pi-coding-agent/examples (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"/home/hiennx/Documents/pi-edit/AGENTS.md\">\n# AGENTS.md\n\n`pi-edit` is a TypeScript Pi coding-agent extension that registers an exact string replacement edit tool with diff preview/rendering support.\n\n## Quick Reference\n\n- Install: `npm install`\n- Run: Unknown; no run script is defined in `package.json`.\n- Test: `npm test`\n- Test watch: `npm run test:watch`\n- Build: Unknown; no build script is defined in `package.json` and `tsconfig.json` uses `noEmit`.\n- Full checks: Unknown; no aggregate lint/typecheck/build script is defined in `package.json`.\n\n## Mini Repo Map\n\n- `src/index.ts` — Pi extension entrypoint, edit tool schema, execution, and TUI rendering.\n- `src/edit-diff.ts` — edit matching, fuzzy normalization, replacement application, and diff generation.\n- `src/paths.ts`, `src/path-utils.ts` — path normalization and cwd-relative resolution helpers.\n- `src/render-utils.ts`, `src/tool-definition-wrapper.ts` — rendering helpers and `ToolDefinition`/`AgentTool` adapters.\n- `test/` — Vitest tests for edit replacement behavior.\n- `examples/` — example JSON tool definitions for compatible edit schemas.\n\n## Instruction Index\n\nRead these only when task matches scope:\n\n| File | Read when | Contains |\n|---|---|---|\n| `docs/agent-instructions/architecture.md` | You change tool behavior, matching/replacement logic, rendering, path handling, or public extension APIs | Component map, data flow, contracts, gotchas |\n| `docs/agent-instructions/build-system.md` | You need install, test, packaging, or command details beyond quick reference | npm scripts, TypeScript/Vitest config, package metadata |\n| `docs/agent-instructions/testing.md` | You add/change tests or debug failures | Test command, framework, current coverage focus |\n| `docs/agent-instructions/code-style.md` | You edit TypeScript and need project-specific conventions | Formatting, imports, API/style rules |\n\n## Critical Rules\n\n- Do not invent unavailable workflows: this repo currently has tests but no `build`, `lint`, `typecheck`, or `run` script in `package.json`.\n- Preserve the edit tool contract: callers must provide exact replacement text, uniqueness is required unless `replace_all` is true, and legacy argument aliases are intentionally supported.\n- Keep detailed agent guidance under `docs/agent-instructions/`; keep this root file concise.\n\n</project_instructions>\n\n</project_context>\n\nCurrent working directory: /home/hiennx/Documents/pi-edit"
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Hi"
+                }
+            ]
+        }
+    ],
+    "stream": true,
+    "stream_options": {
+        "include_usage": true
+    },
+    "store": false,
+    "max_completion_tokens": 16384,
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+                "parameters": {
+                    "type": "object",
+                    "required": [
+                        "path"
+                    ],
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to read (relative or absolute)"
+                        },
+                        "offset": {
+                            "type": "number",
+                            "description": "Line number to start reading from (1-indexed)"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of lines to read"
+                        }
+                    }
+                },
+                "strict": false
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+                "parameters": {
+                    "type": "object",
+                    "required": [
+                        "command"
+                    ],
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Bash command to execute"
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Timeout in seconds (optional, no default timeout)"
+                        }
+                    }
+                },
+                "strict": false
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit",
+                "description": "Performs one to five small, exact replacements in one file. Each old_string must match a unique, non-overlapping region of the original file. Merge changes affecting the same or nearby block, and do not include large unchanged regions.",
+                "parameters": {
+                    "type": "object",
+                    "required": [
+                        "file_path",
+                        "edits"
+                    ],
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute or relative path to the file to modify."
+                        },
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "old_string",
+                                    "new_string"
+                                ],
+                                "properties": {
+                                    "old_string": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 4000,
+                                        "description": "The smallest exact text for one replacement. It must be unique in the original file and must not overlap another edit."
+                                    },
+                                    "new_string": {
+                                        "type": "string",
+                                        "maxLength": 4000,
+                                        "description": "The replacement text. May be empty to delete old_string."
+                                    }
+                                }
+                            },
+                            "minItems": 1,
+                            "maxItems": 5,
+                            "description": "One to five small replacements matched against the original file, with at most 10,000 characters combined. Do not overlap or nest edits, and merge changes affecting the same or nearby block."
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "description": "Replace every occurrence. Only valid when edits contains one item."
+                        }
+                    }
+                },
+                "strict": false
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write",
+                "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+                "parameters": {
+                    "type": "object",
+                    "required": [
+                        "path",
+                        "content"
+                    ],
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to write (relative or absolute)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Content to write to the file"
+                        }
+                    }
+                },
+                "strict": false
+            }
+        }
+    ]
+}
