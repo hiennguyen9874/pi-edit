@@ -270,20 +270,27 @@ describe("edit tool input", () => {
 		);
 	});
 
-	it("enforces individual and aggregate edit size limits", async () => {
-		const tool = createEditToolDefinition(tmpdir());
-		const execute = (edits: Array<{ old_string: string; new_string: string }>) =>
-			tool.execute("call-id", { file_path: "file.txt", edits }, undefined, undefined, undefined as never);
+	it("accepts oversized edit text with a warning", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.txt");
+		await writeFile(filePath, "replace me", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+		const newString = "b".repeat(10_001);
 
-		await expect(execute([{ old_string: "a".repeat(4_001), new_string: "b" }])).rejects.toThrow(
-			"at most 4000 characters",
+		expect(tool.parameters.properties.edits.items.properties.new_string).not.toHaveProperty("maxLength");
+		const result = await tool.execute(
+			"call-id",
+			{ file_path: filePath, edits: [{ old_string: "replace me", new_string: newString }] },
+			undefined,
+			undefined,
+			undefined as never,
 		);
-		await expect(
-			execute([
-				{ old_string: "a".repeat(3_000), new_string: "b".repeat(3_000) },
-				{ old_string: "c".repeat(3_000), new_string: "d".repeat(2_000) },
-			]),
-		).rejects.toThrow("at most 10000 characters");
+
+		expect(await readFile(filePath, "utf-8")).toBe(newString);
+		expect(result.details?.warning).toBe(
+			"Warning: edits[0].new_string contains 10,001 characters; prefer 4,000 or fewer.\n" +
+				"Warning: this call contains 10,011 characters of edit text; prefer 10,000 or fewer combined.",
+		);
 	});
 
 	it("rejects replace_all with multiple edits", async () => {

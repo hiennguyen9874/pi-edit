@@ -32,19 +32,17 @@ type EditRenderState = {
 };
 
 const RECOMMENDED_MAX_EDITS = 5;
-const MAX_EDIT_TEXT_LENGTH = 4_000;
-const MAX_TOTAL_EDIT_TEXT_LENGTH = 10_000;
+const RECOMMENDED_EDIT_TEXT_LENGTH = 4_000;
+const RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH = 10_000;
 
 const editItemSchema = Type.Object({
 	old_string: Type.String({
 		minLength: 1,
-		maxLength: MAX_EDIT_TEXT_LENGTH,
 		description:
-		"The smallest exact text for one replacement. It must be unique in the original file and must not overlap another edit.",
+			"The smallest exact text for one replacement. It must be unique in the original file and must not overlap another edit. Prefer 4,000 characters or fewer.",
 	}),
 	new_string: Type.String({
-		maxLength: MAX_EDIT_TEXT_LENGTH,
-		description: "The replacement text. May be empty to delete old_string.",
+		description: "The replacement text. May be empty to delete old_string. Prefer 4,000 characters or fewer.",
 	}),
 });
 
@@ -53,7 +51,7 @@ const editSchema = Type.Object(
 		file_path: Type.String({ description: "The absolute or relative path to the file to modify." }),
 		edits: Type.Array(editItemSchema, {
 			minItems: 1,
-			description: `One or more non-overlapping replacements, each matched against the original file rather than earlier edits. Prefer at most ${RECOMMENDED_MAX_EDITS} edits; larger valid batches return a warning. Maximum ${MAX_TOTAL_EDIT_TEXT_LENGTH.toLocaleString("en-US")} characters combined.`,
+			description: `One or more non-overlapping replacements, each matched against the original file rather than earlier edits. Prefer at most ${RECOMMENDED_MAX_EDITS} edits and ${RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH.toLocaleString("en-US")} characters combined; larger valid batches return a warning.`,
 		}),
 		replace_all: Type.Optional(
 			Type.Boolean({ description: "Replace every occurrence. Only valid when edits contains one item." }),
@@ -183,10 +181,29 @@ type ValidatedEditInput = {
 	warning?: string;
 };
 
-function getEditCountWarning(editCount: number): string | undefined {
-	return editCount > RECOMMENDED_MAX_EDITS
-		? `Warning: this call contains ${editCount} edits; prefer ${RECOMMENDED_MAX_EDITS} or fewer per call.`
-		: undefined;
+function getEditWarnings(edits: Array<{ oldText: string; newText: string }>): string | undefined {
+	const warnings: string[] = [];
+	if (edits.length > RECOMMENDED_MAX_EDITS) {
+		warnings.push(`Warning: this call contains ${edits.length} edits; prefer ${RECOMMENDED_MAX_EDITS} or fewer per call.`);
+	}
+
+	for (const [index, edit] of edits.entries()) {
+		for (const [field, text] of Object.entries({ old_string: edit.oldText, new_string: edit.newText })) {
+			if (text.length > RECOMMENDED_EDIT_TEXT_LENGTH) {
+				warnings.push(
+					`Warning: edits[${index}].${field} contains ${text.length.toLocaleString("en-US")} characters; prefer ${RECOMMENDED_EDIT_TEXT_LENGTH.toLocaleString("en-US")} or fewer.`,
+				);
+			}
+		}
+	}
+
+	const totalLength = edits.reduce((total, edit) => total + edit.oldText.length + edit.newText.length, 0);
+	if (totalLength > RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH) {
+		warnings.push(
+			`Warning: this call contains ${totalLength.toLocaleString("en-US")} characters of edit text; prefer ${RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH.toLocaleString("en-US")} or fewer combined.`,
+		);
+	}
+	return warnings.length > 0 ? warnings.join("\n") : undefined;
 }
 
 function validateEditInput(input: EditToolInput): ValidatedEditInput {
@@ -203,7 +220,6 @@ function validateEditInput(input: EditToolInput): ValidatedEditInput {
 		throw new Error("replace_all is only valid when edits contains one item.");
 	}
 
-	let totalLength = 0;
 	const edits = input.edits.map((edit, index) => {
 		if (!edit || typeof edit.old_string !== "string" || typeof edit.new_string !== "string") {
 			throw new Error(`edits[${index}] must contain string old_string and new_string values.`);
@@ -211,21 +227,14 @@ function validateEditInput(input: EditToolInput): ValidatedEditInput {
 		if (edit.old_string.length === 0) {
 			throw new Error(`edits[${index}].old_string must not be empty.`);
 		}
-		if (edit.old_string.length > MAX_EDIT_TEXT_LENGTH || edit.new_string.length > MAX_EDIT_TEXT_LENGTH) {
-			throw new Error(`edits[${index}] old_string and new_string must each be at most ${MAX_EDIT_TEXT_LENGTH} characters.`);
-		}
-		totalLength += edit.old_string.length + edit.new_string.length;
 		return { oldText: edit.old_string, newText: edit.new_string };
 	});
-	if (totalLength > MAX_TOTAL_EDIT_TEXT_LENGTH) {
-		throw new Error(`The combined edit text must be at most ${MAX_TOTAL_EDIT_TEXT_LENGTH} characters.`);
-	}
 
 	return {
 		filePath: input.file_path,
 		edits,
 		replaceAll: input.replace_all ?? false,
-		warning: getEditCountWarning(edits.length),
+		warning: getEditWarnings(edits),
 	};
 }
 
@@ -294,16 +303,7 @@ function getRenderablePreviewInput(
 	}
 
 	const canonicalEdits = editItems as EditToolInput["edits"];
-	const totalLength = canonicalEdits.reduce((total, edit) => total + edit.old_string.length + edit.new_string.length, 0);
-	if (
-		canonicalEdits.some(
-			(edit) =>
-				edit.old_string.length < 1 ||
-				edit.old_string.length > MAX_EDIT_TEXT_LENGTH ||
-				edit.new_string.length > MAX_EDIT_TEXT_LENGTH,
-		) ||
-		totalLength > MAX_TOTAL_EDIT_TEXT_LENGTH
-	) {
+	if (canonicalEdits.some((edit) => edit.old_string.length < 1)) {
 		return null;
 	}
 
@@ -423,7 +423,7 @@ export function createEditToolDefinition(
 		description: "Edits one file with one or more exact text replacements.",
 		promptSnippet: "Perform small, exact string replacements in a file",
 		promptGuidelines: [
-			`Use one call for related changes in a file; prefer at most ${RECOMMENDED_MAX_EDITS} edits by merging nearby changes. More than ${RECOMMENDED_MAX_EDITS} valid edits are allowed but return a warning.`,
+			`Use one call for related changes in a file; prefer at most ${RECOMMENDED_MAX_EDITS} edits and ${RECOMMENDED_EDIT_TEXT_LENGTH.toLocaleString("en-US")} characters per value. Larger valid edits are allowed but return a warning.`,
 			"Do not include large unchanged regions or replace whole files.",
 		],
 		parameters: editSchema,
