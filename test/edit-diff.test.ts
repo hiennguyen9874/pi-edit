@@ -1,3 +1,4 @@
+import Ajv from "ajv";
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -205,6 +206,27 @@ describe("edit tool input", () => {
 		expect(result.details?.diff).toBe("diff" in preview ? preview.diff : undefined);
 	});
 
+	it("ignores null edit entries", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.ts");
+		await writeFile(filePath, "const first = 1;\nconst second = 2;\n", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+		const input = {
+			file_path: filePath,
+			edits: [
+				{ old_string: "first = 1", new_string: "first = 10" },
+				null,
+				{ old_string: "second = 2", new_string: "second = 20" },
+				null,
+			],
+		};
+
+		expect(new Ajv().compile(tool.parameters)(input)).toBe(true);
+		await tool.execute("call-id", input, undefined, undefined, undefined as never);
+
+		expect(await readFile(filePath, "utf-8")).toBe("const first = 10;\nconst second = 20;\n");
+	});
+
 	it("does not write when any edit fails", async () => {
 		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
 		const filePath = join(tempDir, "file.ts");
@@ -277,7 +299,12 @@ describe("edit tool input", () => {
 		const tool = createEditToolDefinition(tempDir);
 		const newString = "b".repeat(10_001);
 
-		expect(tool.parameters.properties.edits.items.properties.new_string).not.toHaveProperty("maxLength");
+		expect(
+			new Ajv().compile(tool.parameters)({
+				file_path: filePath,
+				edits: [{ old_string: "replace me", new_string: newString }],
+			}),
+		).toBe(true);
 		const result = await tool.execute(
 			"call-id",
 			{ file_path: filePath, edits: [{ old_string: "replace me", new_string: newString }] },

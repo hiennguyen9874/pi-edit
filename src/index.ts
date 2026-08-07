@@ -49,7 +49,7 @@ const editItemSchema = Type.Object({
 const editSchema = Type.Object(
 	{
 		file_path: Type.String({ description: "The absolute or relative path to the file to modify." }),
-		edits: Type.Array(editItemSchema, {
+		edits: Type.Array(Type.Union([editItemSchema, Type.Null()]), {
 			minItems: 1,
 			description: `One or more non-overlapping replacements, each matched against the original file rather than earlier edits. Prefer at most ${RECOMMENDED_MAX_EDITS} edits and ${RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH.toLocaleString("en-US")} characters combined; larger valid batches return a warning.`,
 		}),
@@ -154,9 +154,15 @@ function prepareEditArguments(input: unknown): EditToolInput {
 	const filePath =
 		typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : undefined;
 	const edits = Array.isArray(args.edits)
-		? args.edits.map((edit) =>
-				edit && typeof edit === "object" ? getLegacyEditItem(edit as LegacyEditItemInput) : null,
-			)
+		? args.edits.map((edit) => {
+			if (edit === null) {
+				return null;
+			}
+			if (!edit || typeof edit !== "object") {
+				return edit;
+			}
+			return getLegacyEditItem(edit as LegacyEditItemInput) ?? edit;
+		})
 		: hasTopLevelEdit(args)
 			? [getLegacyEditItem(args)]
 			: undefined;
@@ -216,19 +222,25 @@ function validateEditInput(input: EditToolInput): ValidatedEditInput {
 	if (input.replace_all !== undefined && typeof input.replace_all !== "boolean") {
 		throw new Error("replace_all must be a boolean.");
 	}
-	if (input.replace_all && input.edits.length !== 1) {
-		throw new Error("replace_all is only valid when edits contains one item.");
-	}
 
-	const edits = input.edits.map((edit, index) => {
-		if (!edit || typeof edit.old_string !== "string" || typeof edit.new_string !== "string") {
+	const edits = input.edits.flatMap((edit, index) => {
+		if (edit === null) {
+			return [];
+		}
+		if (!edit || typeof edit !== "object" || typeof edit.old_string !== "string" || typeof edit.new_string !== "string") {
 			throw new Error(`edits[${index}] must contain string old_string and new_string values.`);
 		}
 		if (edit.old_string.length === 0) {
 			throw new Error(`edits[${index}].old_string must not be empty.`);
 		}
-		return { oldText: edit.old_string, newText: edit.new_string };
+		return [{ oldText: edit.old_string, newText: edit.new_string }];
 	});
+	if (edits.length < 1) {
+		throw new Error("edits must contain at least one non-null item.");
+	}
+	if (input.replace_all && edits.length !== 1) {
+		throw new Error("replace_all is only valid when edits contains one item.");
+	}
 
 	return {
 		filePath: input.file_path,
@@ -294,9 +306,9 @@ function getRenderablePreviewInput(
 	}
 
 	const editItems = Array.isArray(args.edits)
-		? args.edits.map((edit) =>
-				edit && typeof edit === "object" ? getLegacyEditItem(edit as LegacyEditItemInput) : null,
-			)
+		? args.edits
+				.filter((edit) => edit !== null)
+				.map((edit) => (edit && typeof edit === "object" ? getLegacyEditItem(edit as LegacyEditItemInput) : null))
 		: [getLegacyEditItem(args)];
 	if (editItems.length < 1 || editItems.some((edit) => edit === null)) {
 		return null;
