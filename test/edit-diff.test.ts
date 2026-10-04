@@ -206,10 +206,11 @@ describe("edit tool input", () => {
 		expect(result.details?.diff).toBe("diff" in preview ? preview.diff : undefined);
 	});
 
-	it("ignores null edit entries", async () => {
+	it("rejects null edit entries", async () => {
 		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
 		const filePath = join(tempDir, "file.ts");
-		await writeFile(filePath, "const first = 1;\nconst second = 2;\n", "utf-8");
+		const original = "const first = 1;\nconst second = 2;\n";
+		await writeFile(filePath, original, "utf-8");
 		const tool = createEditToolDefinition(tempDir);
 		const input = {
 			file_path: filePath,
@@ -217,14 +218,15 @@ describe("edit tool input", () => {
 				{ old_string: "first = 1", new_string: "first = 10" },
 				null,
 				{ old_string: "second = 2", new_string: "second = 20" },
-				null,
 			],
 		};
 
-		expect(new Ajv().compile(tool.parameters)(input)).toBe(true);
-		await tool.execute("call-id", input, undefined, undefined, undefined as never);
+		expect(new Ajv().compile(tool.parameters)(input)).toBe(false);
+		await expect(
+			tool.execute("call-id", input as never, undefined, undefined, undefined as never),
+		).rejects.toThrow("edits[1] must contain string old_string and new_string values.");
 
-		expect(await readFile(filePath, "utf-8")).toBe("const first = 10;\nconst second = 20;\n");
+		expect(await readFile(filePath, "utf-8")).toBe(original);
 	});
 
 	it("does not write when any edit fails", async () => {
