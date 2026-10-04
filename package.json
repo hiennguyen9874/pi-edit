@@ -1,8 +1,16 @@
 {
-  "name": "pi-edit",
+  "name": "pi-single-edit",
   "version": "0.1.0",
   "description": "Simple edit tool.",
-  "author": "pi-edit contributors",
+  "author": "Xuan Hien",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hiennguyen9874/pi-edit.git"
+  },
+  "homepage": "https://github.com/hiennguyen9874/pi-edit#readme",
+  "bugs": {
+    "url": "https://github.com/hiennguyen9874/pi-edit/issues"
+  },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
@@ -13,6 +21,10 @@
     "extension"
   ],
   "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "files": [
     "src",
     "README.md",
@@ -25,14 +37,14 @@
   },
   "dependencies": {
     "cross-spawn": "^7.0.6",
-    "diff": "^8.0.2",
-    "file-type": "^21.3.4"
+    "diff": "^8.0.2"
   },
   "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": ">=0.74.0",
     "@earendil-works/pi-coding-agent": ">=0.74.0",
     "@earendil-works/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "scripts": {
     "test": "vitest run",
