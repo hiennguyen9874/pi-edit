@@ -1,4 +1,4 @@
-# pi-edit
+# pi-multi-edit
 
 A Pi coding-agent extension that registers an `edit` tool for exact string replacement in files, with fuzzy matching, diff rendering, and TUI preview support.
 
@@ -19,13 +19,22 @@ A Pi coding-agent extension that registers an `edit` tool for exact string repla
 
 ## Install
 
+As a Pi package:
+
 ```sh
-npm install
+pi install npm:pi-multi-edit
 ```
 
-## Test
+Or as an npm dependency:
 
 ```sh
+npm install pi-multi-edit
+```
+
+## Development
+
+```sh
+npm install
 npm test
 npm run test:watch
 ```
@@ -99,7 +108,7 @@ Or using the `piEdit` namespace:
 Creates the full tool definition with TUI rendering, suitable for `pi.registerTool()`.
 
 ```ts
-import { createEditToolDefinition } from "pi-edit";
+import { createEditToolDefinition } from "pi-multi-edit";
 
 const definition = createEditToolDefinition(process.cwd(), {
   matching: { allowFuzzy: false, fuzzyThreshold: 0.9 },
@@ -118,7 +127,7 @@ Wraps the tool definition into an `AgentTool` for the core runtime.
 ### Default extension
 
 ```ts
-import editExtension from "pi-edit";
+import editExtension from "pi-multi-edit";
 
 // Registers the edit tool on session_start
 pi.registerExtension(editExtension);

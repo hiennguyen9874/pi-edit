@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Help agents change `pi-edit` behavior without breaking the Pi extension contract, edit matching semantics, or rendered diff output.
+Help agents change `pi-multi-edit` behavior without breaking the Pi extension contract, edit matching semantics, or rendered diff output.
 
 ## Rules
 

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`pi-edit` is a TypeScript Pi coding-agent extension that registers an exact string replacement edit tool with diff preview/rendering support.
+`pi-multi-edit` is a TypeScript Pi coding-agent extension that registers an exact string replacement edit tool with diff preview/rendering support.
 
 ## Quick Reference
 
