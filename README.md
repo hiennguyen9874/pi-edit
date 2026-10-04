@@ -20,7 +20,7 @@ A Pi coding-agent extension that registers an `edit` tool for exact string repla
 ## Install
 
 ```sh
-pi install npm:pi-single-edit
+pi install npm:@hiennguyen9874/pi-single-edit
 ```
 
 ### Development
@@ -109,7 +109,7 @@ Or using the `piEdit` namespace:
 Creates the full tool definition with TUI rendering, suitable for `pi.registerTool()`.
 
 ```ts
-import { createEditToolDefinition } from "pi-single-edit";
+import { createEditToolDefinition } from "@hiennguyen9874/pi-single-edit";
 
 const definition = createEditToolDefinition(process.cwd(), {
   matching: { allowFuzzy: false, fuzzyThreshold: 0.9 },
@@ -128,7 +128,7 @@ Wraps the tool definition into an `AgentTool` for the core runtime.
 ### Default extension
 
 ```ts
-import editExtension from "pi-single-edit";
+import editExtension from "@hiennguyen9874/pi-single-edit";
 
 // Registers the edit tool on session_start
 pi.registerExtension(editExtension);

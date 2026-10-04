@@ -22,7 +22,7 @@ Document the verified commands and package configuration for installing, testing
 - `.github/workflows/ci.yml` — runs `npm ci` + `npm test` on push to `main` and on PRs.
 - `.github/workflows/publish.yml` — on `v*` tag push, tests and runs `npm publish` via npm Trusted Publishing (OIDC, no token; provenance automatic). Fails if tag ≠ `package.json` version.
 - Release: `npm version patch|minor|major && git push --follow-tags`.
-- Published npm name is `pi-single-edit` (repo is `pi-edit`).
+- Published npm name is `@hiennguyen9874/pi-single-edit` (repo is `pi-edit`).
 
 ## Key Paths
 
