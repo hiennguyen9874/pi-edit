@@ -27,7 +27,7 @@ Help agents change `pi-edit` behavior without breaking the Pi extension contract
 
 - `replace_all` changes duplicate handling: without it, duplicate old text is rejected; with it, every match is replaced.
 - Fuzzy matching normalizes trailing whitespace, smart quotes, unicode dashes, and unicode spaces; unchanged line blocks should keep original bytes where possible.
-- Multiple edit support exists in `src/edit-diff.ts`, but the exported tool schema in `src/index.ts` exposes a single `old_string`/`new_string` operation plus `replace_all`.
+- Multiple edit support exists in `src/edit-diff.ts`, but the exported tool schema in `src/index.ts` exposes a single `old_string`/`new_string` operation plus `replace_all`. Input is validated (string types, non-empty `old_string`, boolean `replace_all`); text over 4,000 characters per value or 10,000 combined is allowed but returns a non-fatal `details.warning`.
 - Error strings are user-facing and tested indirectly by behavior; avoid casual rewrites unless the task is about UX/errors.
 
 ## Related Instructions

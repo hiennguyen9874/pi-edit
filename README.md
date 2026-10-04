@@ -41,6 +41,8 @@ npm run test:watch
 }
 ```
 
+`old_string` must be non-empty. Keep each of `old_string` and `new_string` at 4,000 characters or fewer, and both combined at 10,000 or fewer. Larger edits still apply, but the result includes a warning (in the text output and `details.warning`).
+
 Legacy aliases are also accepted:
 
 ```json

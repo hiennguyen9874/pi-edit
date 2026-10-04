@@ -29,13 +29,23 @@ type EditRenderState = {
 	callComponent?: EditCallRenderComponent;
 };
 
+const RECOMMENDED_EDIT_TEXT_LENGTH = 4_000;
+const RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH = 10_000;
+
+function formatCount(value: number): string {
+	return value.toLocaleString("en-US");
+}
+
 const editSchema = Type.Object(
 	{
 		file_path: Type.String({ description: "The absolute or relative path to the file to modify." }),
 		old_string: Type.String({
-			description: "The exact text to replace, including whitespace. Must be unique unless replace_all is true.",
+			minLength: 1,
+			description: `The smallest exact text to replace, including whitespace. Must be unique unless replace_all is true. Prefer ${formatCount(RECOMMENDED_EDIT_TEXT_LENGTH)} characters or fewer.`,
 		}),
-		new_string: Type.String({ description: "The replacement text." }),
+		new_string: Type.String({
+			description: `The replacement text. May be empty to delete old_string. Prefer ${formatCount(RECOMMENDED_EDIT_TEXT_LENGTH)} characters or fewer.`,
+		}),
 		replace_all: Type.Optional(Type.Boolean({ description: "Replace every occurrence. Defaults to false." })),
 	},
 	{},
@@ -60,6 +70,8 @@ export interface EditToolDetails {
 	patch: string;
 	/** Line number of the first change in the new file (for editor navigation) */
 	firstChangedLine?: number;
+	/** Non-fatal guidance about the completed edit */
+	warning?: string;
 }
 
 /**
@@ -135,12 +147,50 @@ function prepareEditArguments(input: unknown): EditToolInput {
 	} as EditToolInput;
 }
 
-function validateEditInput(input: EditToolInput): Required<EditToolInput> {
+type ValidatedEditInput = Required<EditToolInput> & { warning?: string };
+
+function getEditWarnings(oldString: string, newString: string): string | undefined {
+	const warnings: string[] = [];
+	for (const [field, text] of [
+		["old_string", oldString],
+		["new_string", newString],
+	] as const) {
+		if (text.length > RECOMMENDED_EDIT_TEXT_LENGTH) {
+			warnings.push(
+				`Warning: ${field} contains ${formatCount(text.length)} characters; prefer ${formatCount(RECOMMENDED_EDIT_TEXT_LENGTH)} or fewer.`,
+			);
+		}
+	}
+
+	const totalLength = oldString.length + newString.length;
+	if (totalLength > RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH) {
+		warnings.push(
+			`Warning: this call contains ${formatCount(totalLength)} characters of edit text; prefer ${formatCount(RECOMMENDED_TOTAL_EDIT_TEXT_LENGTH)} or fewer combined.`,
+		);
+	}
+	return warnings.length > 0 ? warnings.join("\n") : undefined;
+}
+
+function validateEditInput(input: EditToolInput): ValidatedEditInput {
+	if (!input || typeof input !== "object" || typeof input.file_path !== "string") {
+		throw new Error("file_path must be a string.");
+	}
+	if (typeof input.old_string !== "string" || typeof input.new_string !== "string") {
+		throw new Error("old_string and new_string must be strings.");
+	}
+	if (input.old_string.length === 0) {
+		throw new Error("old_string must not be empty.");
+	}
+	if (input.replace_all !== undefined && typeof input.replace_all !== "boolean") {
+		throw new Error("replace_all must be a boolean.");
+	}
+
 	return {
 		file_path: input.file_path,
 		old_string: input.old_string,
 		new_string: input.new_string,
 		replace_all: input.replace_all ?? false,
+		warning: getEditWarnings(input.old_string, input.new_string),
 	};
 }
 
@@ -220,7 +270,7 @@ function getRenderablePreviewInput(
 				: typeof args.newText === "string"
 					? args.newText
 					: null;
-	if (oldString === null || newString === null) {
+	if (oldString === null || newString === null || oldString.length === 0) {
 		return null;
 	}
 
@@ -253,12 +303,16 @@ function formatEditResult(
 		return theme.fg("error", errorText);
 	}
 
+	const output: string[] = [];
+	if (result.details?.warning) {
+		output.push(theme.fg("warning", result.details.warning));
+	}
 	const resultDiff = result.details?.diff;
 	if (resultDiff && resultDiff !== previewDiff) {
-		return renderDiff(resultDiff, { filePath: rawPath ?? undefined });
+		output.push(renderDiff(resultDiff, { filePath: rawPath ?? undefined }));
 	}
 
-	return undefined;
+	return output.length > 0 ? output.join("\n\n") : undefined;
 }
 
 function getEditHeaderBg(
@@ -335,12 +389,14 @@ export function createEditToolDefinition(
 			"Use edit with file_path, old_string, and new_string for precise replacements.",
 			"old_string must match exactly, including whitespace and newlines, and be unique unless replace_all is true.",
 			"Use replace_all only when the user wants every occurrence replaced.",
+			`Keep old_string and new_string small; prefer ${formatCount(RECOMMENDED_EDIT_TEXT_LENGTH)} characters or fewer per value. Larger valid edits are allowed but return a warning.`,
+			"Do not include large unchanged regions or replace whole files.",
 		],
 		parameters: editSchema,
 		renderShell: "self",
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
-			const { file_path, old_string, new_string, replace_all } = validateEditInput(input);
+			const { file_path, old_string, new_string, replace_all, warning } = validateEditInput(input);
 			const absolutePath = resolveToCwd(file_path, cwd);
 
 			return withFileMutationQueue(absolutePath, async () => {
@@ -385,10 +441,17 @@ export function createEditToolDefinition(
 					content: [
 						{
 							type: "text",
-							text: `Successfully replaced text in ${file_path}.`,
+							text: warning
+								? `${warning}\nSuccessfully replaced text in ${file_path}.`
+								: `Successfully replaced text in ${file_path}.`,
 						},
 					],
-					details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
+					details: {
+						diff: diffResult.diff,
+						patch,
+						firstChangedLine: diffResult.firstChangedLine,
+						...(warning ? { warning } : {}),
+					},
 				};
 			});
 		},

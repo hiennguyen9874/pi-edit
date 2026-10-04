@@ -142,3 +142,69 @@ describe("edit tool matching options", () => {
 		expect(await readFile(filePath, "utf-8")).toBe("const label = “Save”\n");
 	});
 });
+
+describe("edit tool input", () => {
+	let tempDir: string | undefined;
+
+	afterEach(async () => {
+		if (tempDir) {
+			await rm(tempDir, { recursive: true, force: true });
+			tempDir = undefined;
+		}
+	});
+
+	it("accepts oversized edit text with a warning", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.txt");
+		await writeFile(filePath, "replace me", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+		const newString = "b".repeat(10_001);
+
+		expect(tool.parameters.properties.new_string).not.toHaveProperty("maxLength");
+		const result = await tool.execute(
+			"call-id",
+			{ file_path: filePath, old_string: "replace me", new_string: newString },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		const warning =
+			"Warning: new_string contains 10,001 characters; prefer 4,000 or fewer.\n" +
+			"Warning: this call contains 10,011 characters of edit text; prefer 10,000 or fewer combined.";
+		expect(await readFile(filePath, "utf-8")).toBe(newString);
+		expect(result.details?.warning).toBe(warning);
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(warning) });
+	});
+
+	it("does not warn for small edits", async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "pi-edit-"));
+		const filePath = join(tempDir, "file.txt");
+		await writeFile(filePath, "hello", "utf-8");
+		const tool = createEditToolDefinition(tempDir);
+
+		const result = await tool.execute(
+			"call-id",
+			{ file_path: filePath, old_string: "hello", new_string: "world" },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		expect(result.details?.warning).toBeUndefined();
+		expect(result.content[0]).toMatchObject({ text: `Successfully replaced text in ${filePath}.` });
+	});
+
+	it("rejects invalid input", async () => {
+		const tool = createEditToolDefinition(tmpdir());
+		const execute = (input: unknown) =>
+			tool.execute("call-id", input as never, undefined, undefined, undefined as never);
+
+		await expect(execute({ old_string: "a", new_string: "b" })).rejects.toThrow("file_path must be a string");
+		await expect(execute({ file_path: "f", old_string: "a" })).rejects.toThrow("must be strings");
+		await expect(execute({ file_path: "f", old_string: "", new_string: "b" })).rejects.toThrow("must not be empty");
+		await expect(
+			execute({ file_path: "f", old_string: "a", new_string: "b", replace_all: "yes" }),
+		).rejects.toThrow("replace_all must be a boolean");
+	});
+});
