@@ -1,5 +1,5 @@
 {
-  "name": "pi-multi-edit",
+  "name": "@hiennguyen9874/pi-multi-edit",
   "version": "0.1.2",
   "description": "Pi coding-agent extension: exact string multi-edit tool with fuzzy matching and diff previews.",
   "author": "pi-multi-edit contributors",

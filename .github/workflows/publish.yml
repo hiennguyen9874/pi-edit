@@ -31,8 +31,8 @@ jobs:
       - name: Verify package name
         run: |
           PKG_NAME="$(node -p "require('./package.json').name")"
-          if [ "$PKG_NAME" != "pi-multi-edit" ]; then
-            echo "Unexpected package name: $PKG_NAME (expected pi-multi-edit)"
+          if [ "$PKG_NAME" != "@hiennguyen9874/pi-multi-edit" ]; then
+            echo "Unexpected package name: $PKG_NAME (expected @hiennguyen9874/pi-multi-edit)"
             exit 1
           fi
       - run: npm publish --access public
