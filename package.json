@@ -24,6 +24,7 @@
     ]
   },
   "dependencies": {
+    "cross-spawn": "^7.0.6",
     "diff": "^8.0.2",
     "file-type": "^21.3.4"
   },
