@@ -18,12 +18,12 @@ Document the verified commands and package configuration for installing, testing
 - `npm run test:watch` — run Vitest in watch mode.
 - `npm pack --dry-run` — preview the published tarball contents.
 - `npm publish --access public` — publish `pi-multi-edit` to npm manually (`prepublishOnly` runs `npm test` first).
-- Release via CI: `npm version patch && git push --follow-tags` — a `v*` tag triggers `.github/workflows/publish.yml`.
+- Release via CI: `npm version patch && git push --follow-tags` — `.npmrc` sets `tag-version-prefix=multi-v`, so this creates a `multi-v<version>` tag that triggers `.github/workflows/publish.yml`. Plain `v*` tags belong to `pi-single-edit` on `main`; do not use them here.
 
 ## CI
 
 - `.github/workflows/ci.yml` — `npm ci && npm test` on pushes to `main`/`master` and on pull requests.
-- `.github/workflows/publish.yml` — on `v*` tags: tests, checks the tag matches the `package.json` version and the name is `pi-multi-edit`, then publishes via npm Trusted Publishing (OIDC, no token). Requires a Trusted Publisher configured on npmjs.com for `pi-multi-edit` (repo `hiennguyen9874/pi-edit`, workflow `publish.yml`).
+- `.github/workflows/publish.yml` — on `multi-v*` tags: tests, checks the tag equals `multi-v` + the `package.json` version and the name is `pi-multi-edit`, then publishes via npm Trusted Publishing (OIDC, no token). Requires a Trusted Publisher configured on npmjs.com for `pi-multi-edit` (repo `hiennguyen9874/pi-edit`, workflow `publish.yml`).
 
 ## Key Paths
 

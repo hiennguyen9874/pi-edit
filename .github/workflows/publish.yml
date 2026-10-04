@@ -2,7 +2,7 @@ name: Publish pi-multi-edit to npm
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["multi-v*"] # pi-multi-edit only; main (pi-single-edit) uses plain v* tags
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
       - run: npm test
       - name: Verify tag matches package version
         run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          PKG_VERSION="multi-v$(node -p "require('./package.json').version")"
           if [ "$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
             echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
             exit 1
