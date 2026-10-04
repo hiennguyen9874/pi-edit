@@ -12,7 +12,8 @@
     "url": "https://github.com/hiennguyen9874/pi-edit/issues"
   },
   "publishConfig": {
-    "registry": "https://registry.npmjs.org/"
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "keywords": [
     "pi-package",
