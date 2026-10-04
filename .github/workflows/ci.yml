@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, feat/multi-edit-input]
   pull_request:
 
 jobs:

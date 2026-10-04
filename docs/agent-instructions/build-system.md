@@ -22,7 +22,7 @@ Document the verified commands and package configuration for installing, testing
 
 ## CI
 
-- `.github/workflows/ci.yml` — `npm ci && npm test` on pushes to `main`/`master` and on pull requests.
+- `.github/workflows/ci.yml` — `npm ci && npm test` on pushes to `main`/`master`/`feat/multi-edit-input` and on pull requests.
 - `.github/workflows/publish.yml` — on `multi-v*` tags: tests, checks the tag equals `multi-v` + the `package.json` version and the name is `pi-multi-edit`, then publishes via npm Trusted Publishing (OIDC, no token). Requires a Trusted Publisher configured on npmjs.com for `pi-multi-edit` (repo `hiennguyen9874/pi-edit`, workflow `publish.yml`).
 
 ## Key Paths
