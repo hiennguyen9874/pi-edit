@@ -17,6 +17,13 @@ Document the verified commands and package configuration for installing, testing
 - `npm test` — run Vitest once via `vitest run`.
 - `npm run test:watch` — run Vitest in watch mode.
 
+## CI / Release
+
+- `.github/workflows/ci.yml` — runs `npm ci` + `npm test` on push to `main` and on PRs.
+- `.github/workflows/publish.yml` — on `v*` tag push, tests and runs `npm publish` via npm Trusted Publishing (OIDC, no token; provenance automatic). Fails if tag ≠ `package.json` version.
+- Release: `npm version patch|minor|major && git push --follow-tags`.
+- Published npm name is `pi-single-edit` (repo is `pi-edit`).
+
 ## Key Paths
 
 - `package.json` — npm scripts, dependency metadata, peer dependency ranges, package files, and Pi extension registration.
